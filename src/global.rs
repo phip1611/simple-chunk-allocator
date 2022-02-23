@@ -152,5 +152,9 @@ mod tests {
         assert_eq!(75.0, ALLOCATOR.usage());
         let vec3 = Vec::<u8, _>::with_capacity_in(DEFAULT_CHUNK_SIZE * 1, ALLOCATOR.allocator_api_glue());
         assert_eq!(87.5, ALLOCATOR.usage());
+
+        drop(vec2);
+        drop(vec3);
+        assert_eq!(0.0, ALLOCATOR.usage());
     }
 }

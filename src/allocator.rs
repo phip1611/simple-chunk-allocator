@@ -312,7 +312,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
     #[track_caller]
     #[inline]
-    pub(crate) fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+    pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         if self.is_first_alloc.get() {
             self.is_first_alloc.replace(false);
             // Zero bitmap
@@ -359,7 +359,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
     #[track_caller]
     #[inline]
-    pub(crate) unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+    pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
         // zero sized types may trigger this; according to the Rust doc of the `Allocator`
         // trait this is intended. I work around this by changing the size to 1.
         let layout = if layout.size() == 0 {

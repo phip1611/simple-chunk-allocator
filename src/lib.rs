@@ -52,6 +52,13 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     bitmap: &'a mut [u8],
     /// Helper to do some initial initialization on the first runtime invocation.
     is_first_alloc: bool,
+    /// Contains the next free chunk, maybe. The first value of the pair is the index of
+    /// the chunk whereas the second one is a hint for the size. This value gets updated
+    /// during allocations and allocations. It helps to accelerate the lookup of new
+    /// free chunks. For example, if a deallocation happens, it is likely that the next allocation
+    /// fit into that space (hopefully). This prevents the need to iterate over all chunks which
+    /// can take up to tens of thousands of CPU cycles in the worst case.
+    maybe_next_free_chunk: Option<(usize, usize)>,
 }
 
 impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
@@ -97,7 +104,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         Ok(Self {
             heap,
             bitmap ,
-            is_first_alloc: true
+            is_first_alloc: true,
+            maybe_next_free_chunk: Some((0, expected_bitmap_length * 8))
         })
     }
 
@@ -182,10 +190,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         (chunk_index / 8, chunk_index % 8)
     }
 
-    /// Returns the index of the next free chunk of memory that is correctly aligned.
+    /// Finds the next free chunk who's pointer has the guaranteed alignment.
     ///
     /// # Parameters
-    /// - `start_chunk` describes the start chunk; i.e. the search space inside the backing storage
     /// - `alignment` required alignment of the chunk in memory
     ///
     /// # Return
@@ -193,17 +200,21 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[inline(always)]
     fn find_next_free_aligned_chunk_index(
         &self,
-        start_chunk: Option<usize>,
         alignment: usize,
     ) -> Result<usize, ()> {
-        let start_chunk = start_chunk.unwrap_or(0);
+        let start = self.maybe_next_free_chunk.map(|(index, _)| index).unwrap_or(0);
 
-        if start_chunk >= self.chunk_count() {
-            log::debug!("chunk_index out of range!");
-            return Err(());
-        }
+        #[cfg(test)]
+        println!("---------");
 
-        (start_chunk..self.chunk_count())
+        // iterates over all chunks to find a free one; can cope with wrapping at the border
+        // i.e. searches indice 16-31 and 0-15 in that order.
+        (start..(start + self.chunk_count())).map(|index| index % self.chunk_count())
+            .map(|x| {
+                #[cfg(test)]
+                println!("{}", x);
+                x
+            })
             .filter(|chunk_index| self.chunk_is_free(*chunk_index))
             .map(|chunk_index| (chunk_index, unsafe { self.chunk_index_to_ptr(chunk_index) }))
             .filter(|(_, addr)| addr.align_offset(alignment) == 0)
@@ -214,7 +225,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             .ok_or(())
     }
 
-    /// Finds the next available chain of available chunks. Returns the
+    /*/// Finds the next available chain of available chunks. Returns the
     /// beginning index.
     ///
     /// # Parameters
@@ -260,7 +271,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
         // out of memory
         Err(())
-    }
+    }*/
 
     /// Returns the pointer to the beginning of the chunk.
     #[inline(always)]
@@ -287,7 +298,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         (ptr as usize - heap_begin_inclusive as usize) / CHUNK_SIZE
     }
 
-    /// Allocates memory from the backing storage. Performs bookkeeping in the bitmao
+    /*/// Allocates memory from the backing storage. Performs bookkeeping in the bitmao
     /// data structure. On the very first call, this ensures that the bitmap gets zeroed.
     #[track_caller]
     #[inline]
@@ -328,6 +339,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
 
         self.chunk_index_to_ptr(index)
+
+        TODO next_free_index_optimization
     }
 
     #[track_caller]
@@ -344,7 +357,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         for i in index..index + required_chunks {
             self.mark_chunk_as_free(i);
         }
-    }
+        TODO next_free_index_optimization
+    }*/
 }
 
 #[cfg(test)]
@@ -381,7 +395,8 @@ mod tests {
         /// Uses the std global allocator for this. The memory is page-aligned.
         pub fn create_heap_and_bitmap_vectors(
         ) -> (Vec<u8, PageAlignedAlloc>, Vec<u8, PageAlignedAlloc>) {
-            const CHUNK_COUNT: usize = 16;
+            // 32 chunks with default chunk size = 256 bytes = 2 pages = 2*4096
+            const CHUNK_COUNT: usize = 32;
             const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
             let mut heap = Vec::with_capacity_in(HEAP_SIZE, PageAlignedAlloc);
             (0..heap.capacity()).for_each(|_| heap.push(0));
@@ -540,39 +555,37 @@ mod tests {
         }
     }
 
-    /*#[test]
-    fn find_next_free_chunk_aligned() {
-        let heap_size: usize = 16 * DEFAULT_ALLOCATOR_CHUNK_SIZE;
-        let mut heap = vec![0_u8; heap_size];
-        let mut bitmap = vec![0_u8; heap_size / DEFAULT_ALLOCATOR_CHUNK_SIZE / 8];
-        bitmap[0] = 0x0f;
-        let alloc =
-            ChunkAllocator::<DEFAULT_ALLOCATOR_CHUNK_SIZE>::new(&mut heap, &mut bitmap).unwrap();
+    /// Tests the method `find_next_free_chunk_aligned` which is the base for the allocation algorithm.
+    #[test]
+    fn test_find_next_free_chunk_aligned() {
+        let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
+        let mut alloc =
+            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
 
-        assert_eq!(
-            4,
-            alloc.find_next_free_aligned_chunk_index(None, 1).unwrap()
-        );
-        assert_eq!(
-            4,
-            alloc
-                .find_next_free_aligned_chunk_index(Some(0), 1)
-                .unwrap()
-        );
+        // I made this test for these two properties. Test might need to get adjusted if this
+        // changes
+        assert_eq!(alloc.chunk_size(), DEFAULT_CHUNK_SIZE);
+        assert_eq!(alloc.chunk_count(), 32);
 
-        // the very last chunk is available
-        assert_eq!(
-            15,
-            alloc
-                .find_next_free_aligned_chunk_index(Some(alloc.chunk_count() - 1), 1)
-                .unwrap()
-        );
-        assert!(alloc
-            .find_next_free_aligned_chunk_index(Some(alloc.chunk_count()), 1)
-            .is_err());
+        assert_eq!(0, alloc.find_next_free_aligned_chunk_index(4096).unwrap());
+        alloc.mark_chunk_as_used(0);
+        alloc.maybe_next_free_chunk = Some((1, 1));
+
+        assert_eq!(1, alloc.find_next_free_aligned_chunk_index(1).unwrap());
+        alloc.maybe_next_free_chunk = Some((2, 1));
+        assert_eq!(16, alloc.find_next_free_aligned_chunk_index(4096).unwrap());
+        alloc.mark_chunk_as_used(16);
+        // makes sure the next search
+        alloc.maybe_next_free_chunk = Some((17, 1));
+
+        assert!(alloc.find_next_free_aligned_chunk_index(4096).is_err(), "out of memory; only 2 pages of memory");
+
+        // now free the first chunk again, which enables a further 4096 byte aligned allocation
+        alloc.mark_chunk_as_free(0);
+        assert_eq!(0, alloc.find_next_free_aligned_chunk_index(4096).unwrap());
     }
 
-    #[test]
+    /*#[test]
     fn test_find_free_coherent_chunks() {
         let heap_size: usize = 24 * DEFAULT_ALLOCATOR_CHUNK_SIZE;
         let mut heap = vec![0_u8; heap_size];

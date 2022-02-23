@@ -6,6 +6,7 @@ use core::ptr::NonNull;
 
 /// Synchronized wrapper around [`ChunkAllocator`] that implements the Rust traits
 /// [`GlobalAlloc`] which enables the usage as global allocator.
+#[derive(Debug)]
 pub struct GlobalChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE>(
     spin::Mutex<Option<ChunkAllocator<'a, CHUNK_SIZE>>>,
 );
@@ -84,6 +85,7 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a
 /// // Vector from the standard library will use my custom allocator instead.
 /// let vec = Vec::<u8, _>::with_capacity_in(123, ALLOCATOR.allocator_api_glue());
 /// ```
+#[derive(Debug)]
 pub struct AllocatorApiGlue<'a, 'b, const CHUNK_SIZE: usize>(
     &'a GlobalChunkAllocator<'b, CHUNK_SIZE>,
 );
@@ -110,9 +112,7 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
 
 #[cfg(test)]
 mod tests {
-    use std::alloc::{Allocator, AllocError, Layout};
-    use std::ptr::NonNull;
-    use crate::{GlobalChunkAllocator, DEFAULT_CHUNK_SIZE, AllocatorApiGlue};
+    use super::*;
     use std::vec::Vec;
 
 
@@ -120,7 +120,7 @@ mod tests {
     /// the underlying [`ChunkAllocator`]. This is like an "integration" test
     /// whereas the other tests in the other module are unit tests.
     #[test]
-    fn test_alloc() {
+    fn test_allocator_with_allocator_api() {
         const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * 8;
         const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
         const BITMAP_SIZE: usize = CHUNK_COUNT / 8;

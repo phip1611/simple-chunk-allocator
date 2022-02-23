@@ -143,7 +143,12 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// - `chunk_index` describes the start chunk; i.e. the search space inside the backing storage
     #[inline(always)]
     fn chunk_is_free(&self, chunk_index: usize) -> bool {
-        assert!(chunk_index < self.chunk_count());
+        assert!(
+            chunk_index < self.chunk_count(),
+            "chunk_index={} is bigger than max_chunk_count()={}",
+            chunk_index,
+            self.chunk_count() - 1
+        );
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
         let relevant_bit = (self.bitmap[byte_i] >> bit) & 1;
         relevant_bit == 0

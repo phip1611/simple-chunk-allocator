@@ -1,11 +1,10 @@
 //! Module for [`ChunkAllocator`].
 
+use core::alloc::AllocError;
 use core::alloc::Layout;
-use core::alloc::{AllocError, Allocator};
 use core::cell::Cell;
 use core::ptr::NonNull;
 use libm;
-use core::alloc::GlobalAlloc;
 
 /// Possible errors of [`ChunkAllocator`].
 #[derive(Debug)]
@@ -225,8 +224,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             self.chunk_index_to_ptr(self.maybe_next_free_chunk.0)
                 .align_offset(alignment)
                 == 0
-        }
-        {
+        } {
             let found_index = self.maybe_next_free_chunk.0;
             self.maybe_next_free_chunk = (
                 (self.maybe_next_free_chunk.0 + chunk_num_request) % self.chunk_count(),
@@ -464,8 +462,7 @@ mod tests {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
 
         // check that it compiles
-        let mut _alloc =
-            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
+        let mut _alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
     }
 
     /// Initializes the allocator with backing memory that is static inside the binary.
@@ -481,9 +478,8 @@ mod tests {
         static mut HEAP_BITMAP: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
 
         // check that it compiles
-        let mut _alloc = unsafe {
-            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut HEAP, &mut HEAP_BITMAP).unwrap()
-        };
+        let mut _alloc: ChunkAllocator =
+            unsafe { ChunkAllocator::new(&mut HEAP, &mut HEAP_BITMAP).unwrap() };
     }
 
     /// Test looks if the allocator ensures that the required chunk count to manage the backing
@@ -504,7 +500,7 @@ mod tests {
                 (chunk_count / 8) + 1
             };
             let mut bitmap = vec![0_u8; bitmap_size_exact];
-            let alloc = ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut bitmap).unwrap();
+            let alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut bitmap).unwrap();
             assert_eq!(
                 chunk_count,
                 alloc.chunk_count(),
@@ -540,7 +536,7 @@ mod tests {
     #[test]
     fn test_chunk_index_to_bitmap_indices() {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
-        let alloc = ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
+        let alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
         // chunk 3 gets described by bitmap byte 0 bit 3
         assert_eq!((0, 3), alloc.chunk_index_to_bitmap_indices(3));
@@ -556,7 +552,7 @@ mod tests {
     fn test_chunk_is_free() {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
         heap_bitmap[0] = 0x2f;
-        let alloc = ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
+        let alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
         assert!(!alloc.chunk_is_free(0));
         assert!(!alloc.chunk_is_free(1));
@@ -571,7 +567,7 @@ mod tests {
     fn test_chunk_index_to_ptr() {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
         let heap_ptr = heap.as_ptr();
-        let alloc = ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
+        let alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
         unsafe {
             assert_eq!(heap_ptr, alloc.chunk_index_to_ptr(0));
@@ -590,8 +586,7 @@ mod tests {
     #[test]
     fn test_find_free_continuous_memory_region_basic() {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
-        let mut alloc =
-            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
+        let mut alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
         // I made this test for these two properties. Test might need to get adjusted if this
         // changes
@@ -633,8 +628,7 @@ mod tests {
     #[test]
     fn test_find_free_continuous_memory_region_full_1() {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
-        let mut alloc =
-            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
+        let mut alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
         // I made this test for these two properties. Test might need to get adjusted if this
         // changes
@@ -674,8 +668,7 @@ mod tests {
     #[test]
     fn test_find_free_continuous_memory_region_full_2() {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
-        let mut alloc =
-            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
+        let mut alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
         // I made this test for these two properties. Test might need to get adjusted if this
         // changes

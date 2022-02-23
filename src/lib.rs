@@ -4,12 +4,16 @@
 #![feature(allocator_api)]
 #![feature(const_mut_refs)]
 #![feature(const_for)]
+#![feature(nonnull_slice_from_raw_parts)]
 
 #[cfg(test)]
 #[macro_use]
 extern crate std;
 
 use core::alloc::Layout;
+use core::alloc::{Allocator, AllocError};
+use core::cell::Cell;
+use core::ptr::NonNull;
 use libm;
 
 /// Possible errors of [`ChunkAllocator`].
@@ -24,6 +28,7 @@ pub enum ChunkAllocatorError {
     BadBitmapMemory,
     /// The chunk size must be a multiple of 8 and not 0.
     BadChunkSize,
+    OutOfMemory,
 }
 
 /// Default chunk size used by [`ChunkAllocator`].
@@ -47,7 +52,7 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Backing memory for bookkeeping.
     bitmap: &'a mut [u8],
     /// Helper to do some initial initialization on the first runtime invocation.
-    is_first_alloc: bool,
+    is_first_alloc: Cell<bool>,
     /// Contains the next free chunk, maybe. The first value of the pair probably contains the
     /// next free chunk. This is always the case, if a allocation follows a deallocation. The
     /// deallocation will store the just freed block in this property to accelerate the next
@@ -103,7 +108,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         Ok(Self {
             heap,
             bitmap,
-            is_first_alloc: true,
+            is_first_alloc: Cell::new(true),
             maybe_next_free_chunk: (0, chunk_count),
         })
     }
@@ -205,10 +210,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         &mut self,
         chunk_num_request: usize,
         alignment: usize,
-    ) -> Result<usize, ()> {
-        if chunk_num_request < 0 || chunk_num_request > self.chunk_count() {
+    ) -> Result<usize, ChunkAllocatorError> {
+        if /*chunk_num_request < 0 || */chunk_num_request > self.chunk_count() {
             // out of memory
-            return Err(());
+            return Err(ChunkAllocatorError::OutOfMemory);
         }
 
         // Use optimization; fast allocate
@@ -258,7 +263,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
                 // get the first
                 .next()
                 // OK or out of memory
-                .ok_or(());
+                .ok_or(ChunkAllocatorError::OutOfMemory);
 
             if let Ok(index) = res {
                 self.maybe_next_free_chunk = ((index + 1) % self.chunk_count(), 1);
@@ -293,13 +298,21 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         (ptr as usize - heap_begin_inclusive as usize) / CHUNK_SIZE
     }
 
-    /*/// Allocates memory from the backing storage. Performs bookkeeping in the bitmao
-    /// data structure. On the very first call, this ensures that the bitmap gets zeroed.
+    /// Calculates the number of required chunks to fulfill an allocation request.
+    #[inline(always)]
+    fn calc_required_chunks(&self, size: usize) -> usize {
+        if size % CHUNK_SIZE == 0 {
+            size / CHUNK_SIZE
+        } else {
+            (size / CHUNK_SIZE) + 1
+        }
+    }
+
     #[track_caller]
     #[inline]
-    pub unsafe fn alloc(&mut self, layout: Layout) -> *mut u8 {
-        if self.is_first_alloc {
-            self.is_first_alloc = false;
+    fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if self.is_first_alloc.get() {
+            self.is_first_alloc.replace(false);
             // Zero bitmap
             self.bitmap.fill(0);
         }
@@ -311,13 +324,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             layout
         };
 
-        let required_chunks = if layout.size() % CHUNK_SIZE == 0 {
-            layout.size() / CHUNK_SIZE
-        } else {
-            (layout.size() / CHUNK_SIZE) + 1
-        };
+        let required_chunks = self.calc_required_chunks(layout.size());
 
-        let index = self.find_free_coherent_chunks_aligned(required_chunks, layout.align());
+        let index = self.find_free_continuous_memory_region(required_chunks, layout.align());
 
         if let Err(_) = index {
             panic!(
@@ -333,27 +342,33 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             self.mark_chunk_as_used(i);
         }
 
-        self.chunk_index_to_ptr(index)
-
-        TODO next_free_index_optimization
+        let heap_ptr = unsafe { self.chunk_index_to_ptr(index) };
+        log::trace!("alloc: layout={layout:?}, ptr={heap_ptr:?}, #chunks={}", required_chunks);
+        let heap_ptr = NonNull::new(heap_ptr).unwrap();
+        Ok(
+            NonNull::slice_from_raw_parts(heap_ptr, required_chunks * self.chunk_size())
+        )
     }
 
     #[track_caller]
     #[inline]
-    pub unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
-        let mut required_chunks = layout.size() / CHUNK_SIZE;
-        let modulo = layout.size() % CHUNK_SIZE;
-        if modulo != 0 {
-            required_chunks += 1;
-        }
-        // log::debug!("dealloc: layout={:?} ({} chunks]", layout, required_chunks);
+    unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+        let required_chunks = self.calc_required_chunks(layout.size());
 
-        let index = self.ptr_to_chunk_index(ptr as *const u8);
+        log::trace!("dealloc: layout={:?}, #chunks={})", layout, required_chunks);
+
+        let index = self.ptr_to_chunk_index(ptr.as_ptr());
         for i in index..index + required_chunks {
             self.mark_chunk_as_free(i);
         }
-        TODO next_free_index_optimization
-    }*/
+
+        // This helps the next allocation to be faster. Currently, this prefers the biggest
+        // possible continuous region. However, this likely lead to fragmentation once heap
+        // usage grows.
+        if required_chunks > self.maybe_next_free_chunk.1 {
+            self.maybe_next_free_chunk = (index, required_chunks);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -370,9 +385,9 @@ mod tests {
 
         /// Helper struct to let the std vector align stuff at a page boundary.
         /// Forwards requests to the global Rust allocator provided by the standard library.
-        pub struct PageAlignedAlloc;
+        pub struct GlobalPageAlignedAlloc;
 
-        unsafe impl Allocator for PageAlignedAlloc {
+        unsafe impl Allocator for GlobalPageAlignedAlloc {
             fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
                 let alignment = max(layout.align(), 4096);
                 // unwrap should never fail, because layout.align() is already a power
@@ -389,14 +404,14 @@ mod tests {
         /// Creates backing memory for the allocator and the bitmap management structure.
         /// Uses the std global allocator for this. The memory is page-aligned.
         pub fn create_heap_and_bitmap_vectors(
-        ) -> (Vec<u8, PageAlignedAlloc>, Vec<u8, PageAlignedAlloc>) {
+        ) -> (Vec<u8, GlobalPageAlignedAlloc>, Vec<u8, GlobalPageAlignedAlloc>) {
             // 32 chunks with default chunk size = 256 bytes = 2 pages = 2*4096
             const CHUNK_COUNT: usize = 32;
             const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-            let mut heap = Vec::with_capacity_in(HEAP_SIZE, PageAlignedAlloc);
+            let mut heap = Vec::with_capacity_in(HEAP_SIZE, GlobalPageAlignedAlloc);
             (0..heap.capacity()).for_each(|_| heap.push(0));
             const BITMAP_SIZE: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE / 8;
-            let mut heap_bitmap = Vec::with_capacity_in(BITMAP_SIZE, PageAlignedAlloc);
+            let mut heap_bitmap = Vec::with_capacity_in(BITMAP_SIZE, GlobalPageAlignedAlloc);
             (0..heap_bitmap.capacity()).for_each(|_| heap_bitmap.push(0));
 
             assert_eq!(heap.as_ptr().align_offset(4096), 0, "must be page aligned");
@@ -669,15 +684,3 @@ mod tests {
         );
     }
 }
-
-// TODO für morgen
-// der allokator ist so langsam, da er irgendwan ntausende iterationen machen muss
-// Idee: Optimierung: bei jeder allokation merkt er sich wo er war, da es wahrscheinlich
-// ist, dass er beim nächsten mal da weiter machen kann. Diese Strategie ist zumindest gut
-// so lange der heap noch nicht einmal ganz voll war. Das sollte viel Zeit sparen.
-//
-// Außerdem: Die Bitmap selbst kann im  Heap bereich selbst legen.. vereinfaht die API
-// Und Chunk Size auf 512 byte vergrößern? Dass man nur 256 byte braucht ist unwahrscheinlich..
-//
-// sonst vllt: ein buddy allokator der ganze pages allokiert und dann der 256 byte allokator
-// daneben?! (SLAB)

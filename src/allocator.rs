@@ -327,14 +327,14 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         let index = self.find_free_continuous_memory_region(required_chunks, layout.align());
 
         if let Err(_) = index {
-            panic!(
+            log::warn!(
                 "Out of Memory. Can't fulfill the requested layout: {:?}. Current usage is: {}%/{}byte",
                 layout,
                 self.usage(),
                 ((self.usage() * self.capacity() as f32) as u64)
             );
         }
-        let index = index.unwrap();
+        let index = index.map_err(|_| AllocError)?;
 
         for i in index..index + required_chunks {
             self.mark_chunk_as_used(i);

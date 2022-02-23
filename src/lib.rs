@@ -525,6 +525,21 @@ mod tests {
         assert!(!alloc.chunk_is_free(5));
     }
 
+    /// Tests the `chunk_index_to_ptr` method.
+    #[test]
+    fn test_chunk_index_to_ptr() {
+        let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
+        let heap_ptr = heap.as_ptr();
+        let alloc =
+            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut heap_bitmap).unwrap();
+
+        unsafe {
+            assert_eq!(heap_ptr, alloc.chunk_index_to_ptr(0));
+            assert_eq!(heap_ptr.add(alloc.chunk_size() * 1), alloc.chunk_index_to_ptr(1));
+            assert_eq!(heap_ptr.add(alloc.chunk_size() * 7), alloc.chunk_index_to_ptr(7));
+        }
+    }
+
     /*#[test]
     fn find_next_free_chunk_aligned() {
         let heap_size: usize = 16 * DEFAULT_ALLOCATOR_CHUNK_SIZE;
@@ -576,23 +591,7 @@ mod tests {
         assert_eq!(12, alloc.find_free_coherent_chunks_aligned(5, 1).unwrap());
     }
 
-    #[test]
-    fn test_chunk_index_to_ptr() {
-        let heap_size: usize = 8 * DEFAULT_ALLOCATOR_CHUNK_SIZE;
-        let mut heap = vec![0_u8; heap_size];
-        let ptr = heap.as_ptr();
-        let mut bitmap = vec![0_u8; heap_size / DEFAULT_ALLOCATOR_CHUNK_SIZE / 8];
-        let alloc =
-            ChunkAllocator::<DEFAULT_ALLOCATOR_CHUNK_SIZE>::new(&mut heap, &mut bitmap).unwrap();
 
-        unsafe {
-            assert_eq!(ptr, alloc.chunk_index_to_ptr(0));
-            assert_eq!(
-                ptr as usize + DEFAULT_ALLOCATOR_CHUNK_SIZE,
-                alloc.chunk_index_to_ptr(1) as usize
-            );
-        }
-    }
 
     #[test]
     fn test_alloc() {

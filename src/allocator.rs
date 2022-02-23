@@ -233,10 +233,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             let found_index = self.maybe_next_free_chunk.0;
             // TODO it feels false that this method updates this data structure but
             //  does not mark the blocks as free! I think the upper method should do that!
-            self.maybe_next_free_chunk = (
+            /*self.maybe_next_free_chunk = (
                 (self.maybe_next_free_chunk.0 + chunk_num_request) % self.chunk_count(),
                 self.maybe_next_free_chunk.1 - chunk_num_request,
-            );
+            );*/
             Ok(found_index)
         } else {
             let start_index = self.maybe_next_free_chunk.0;
@@ -272,7 +272,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             if let Ok(index) = res {
                 // TODO it feels false that this method updates this data structure but
                 //  does not mark the blocks as free! I think the upper method should do that!
-                self.maybe_next_free_chunk = ((index + 1) % self.chunk_count(), 1);
+                //self.maybe_next_free_chunk = ((index + 1) % self.chunk_count(), 1);
             }
 
             res

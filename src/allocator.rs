@@ -10,7 +10,7 @@ use libm;
 #[derive(Debug)]
 pub enum ChunkAllocatorError {
     /// The backing memory for the heap must be
-    /// - an even multiple of [`DEFAULT_ALLOCATOR_CHUNK_SIZE`], and
+    /// - an even multiple of [`DEFAULT_CHUNK_SIZE`], and
     /// - a multiple of 8 to be correctly represented by the bitmap.
     BadHeapMemory,
     /// The number of bits in the backing memory for the heap bitmap
@@ -61,12 +61,6 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
 }
 
 impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
-    /*/// Returns the default const generic value of `CHUNK_SIZE`.
-    #[inline]
-    pub const fn default_chunk_size() -> usize {
-        // keep in sync with struct definition!
-        DEFAULT_ALLOCATOR_CHUNK_SIZE
-    }*/
 
     /// Returns the used chunk size.
     #[inline]
@@ -77,7 +71,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Creates a new allocator object. Verifies that the provided memory has the correct properties.
     /// Zeroes the bitmap.
     ///
-    /// - heap length must be a multiple of [`CHUNK_SIZE`]
+    /// - heap length must be a multiple of `CHUNK_SIZE`
     /// - the heap must be >= 0
     #[inline]
     pub const fn new(

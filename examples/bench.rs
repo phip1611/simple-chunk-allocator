@@ -72,10 +72,12 @@ fn main() {
 
     all_alloc_measurements.sort_by(|x1, x2| x1.cmp(x2));
     println!(
-        "Stats: {:6} allocations, median={:3} ticks, average={:3} ticks",
+        "Stats: {:6} allocations, median={} ticks, average={} ticks, min={} ticks, max={} ticks",
         all_alloc_measurements.len(),
         all_alloc_measurements[all_alloc_measurements.len() / 2],
-        all_alloc_measurements.iter().sum::<u64>() / (all_alloc_measurements.len() as u64)
+        all_alloc_measurements.iter().sum::<u64>() / (all_alloc_measurements.len() as u64),
+        all_alloc_measurements.iter().min().unwrap(),
+        all_alloc_measurements.iter().max().unwrap(),
     );
 }
 

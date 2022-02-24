@@ -220,7 +220,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
 
         // Use optimization; fast allocate
-        // - check if it is really free
+        // - check if it is really free and already properly allocated
         if self.chunk_is_free(self.maybe_next_free_chunk.0)
             // - check that it fits
             && chunk_num_request <= self.maybe_next_free_chunk.1
@@ -232,7 +232,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         } {
             let found_index = self.maybe_next_free_chunk.0;
             // TODO it feels false that this method updates this data structure but
-            //  does not mark the blocks as free! I think the upper method should do that!
+            //  does not mark the blocks as used! I think the upper method should do that!
             self.maybe_next_free_chunk = (
                 (self.maybe_next_free_chunk.0 + chunk_num_request) % self.chunk_count(),
                 self.maybe_next_free_chunk.1 - chunk_num_request,
@@ -271,8 +271,13 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
             if let Ok(index) = res {
                 // TODO it feels false that this method updates this data structure but
-                //  does not mark the blocks as free! I think the upper method should do that!
-                self.maybe_next_free_chunk = ((index + 1) % self.chunk_count(), 1);
+                //  does not mark the blocks as used! I think the upper method should do that!
+
+                // Only update "maybe_next_free_chunk" if it doesn't already point to a free location
+                if !self.chunk_is_free(self.maybe_next_free_chunk.0) || self.maybe_next_free_chunk.1 == 0 {
+                    self.maybe_next_free_chunk = ((index + 1) % self.chunk_count(), 1);
+                }
+
             }
 
             res
@@ -372,20 +377,20 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             layout
         };
 
-        let required_chunks = self.calc_required_chunks(layout.size());
+        let freed_chunks = self.calc_required_chunks(layout.size());
 
-        log::trace!("dealloc: layout={:?}, #chunks={})", layout, required_chunks);
+        log::trace!("dealloc: layout={:?}, #chunks={})", layout, freed_chunks);
 
         let index = self.ptr_to_chunk_index(ptr.as_ptr());
-        for i in index..index + required_chunks {
+        for i in index..index + freed_chunks {
             self.mark_chunk_as_free(i);
         }
 
-        // This helps the next allocation to be faster. Currently, this prefers the biggest
-        // possible continuous region. However, this likely lead to fragmentation once heap
-        // usage grows.
-        if required_chunks > self.maybe_next_free_chunk.1 {
-            self.maybe_next_free_chunk = (index, required_chunks);
+        // This helps the next allocation to be faster. Currently, this prefers the smallest
+        // possible continuous region. This prevents fragmentation but assumes/hopes the next
+        // allocation only needs one single chunk.
+        if freed_chunks < self.maybe_next_free_chunk.1 {
+            self.maybe_next_free_chunk = (index, freed_chunks);
         }
     }
 }

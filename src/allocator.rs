@@ -145,7 +145,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     fn chunk_is_free(&self, chunk_index: usize) -> bool {
         assert!(
             chunk_index < self.chunk_count(),
-            "chunk_index={} is bigger than max_chunk_count()={}",
+            "chunk_index={} is bigger than max chunk index={}",
             chunk_index,
             self.chunk_count() - 1
         );
@@ -212,76 +212,45 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         chunk_num_request: usize,
         alignment: usize,
     ) -> Result<usize, ChunkAllocatorError> {
-        if
-        /*chunk_num_request < 0 || */
-        chunk_num_request > self.chunk_count() {
+        if chunk_num_request > self.chunk_count() {
             // out of memory
             return Err(ChunkAllocatorError::OutOfMemory);
         }
 
-        // Use optimization; fast allocate
-        // - check if it is really free and already properly allocated
-        if self.chunk_is_free(self.maybe_next_free_chunk.0)
-            // - check that it fits
-            && chunk_num_request <= self.maybe_next_free_chunk.1
-            // - check alignment
-            && unsafe {
-            self.chunk_index_to_ptr(self.maybe_next_free_chunk.0)
-                .align_offset(alignment)
-                == 0
-        } {
-            let found_index = self.maybe_next_free_chunk.0;
-            // TODO it feels false that this method updates this data structure but
-            //  does not mark the blocks as used! I think the upper method should do that!
-            self.maybe_next_free_chunk = (
-                (self.maybe_next_free_chunk.0 + chunk_num_request) % self.chunk_count(),
-                self.maybe_next_free_chunk.1 - chunk_num_request,
-            );
-            Ok(found_index)
-        } else {
-            let start_index = self.maybe_next_free_chunk.0;
+        let start_index = self.maybe_next_free_chunk.0;
 
-            let res = (start_index..(start_index + self.chunk_count()))
-                // cope with wrapping indices (i.e. index 0 follows 31)
-                .map(|index| index % self.chunk_count())
-                .filter(|chunk_index| self.chunk_is_free(*chunk_index))
-                // If the heap has 8 chunks and we need 4 but start the search at index 6, then we
-                // don't have enough continuous chunks to fulfill the request. Thus, we skip those.
-                .skip_while(|chunk_index| {
-                    *chunk_index + (chunk_num_request - 1) >= self.chunk_count()
-                })
-                // ALIGNMENT CHECK BEGIN
-                .map(|chunk_index| (chunk_index, unsafe { self.chunk_index_to_ptr(chunk_index) }))
-                .filter(|(_, addr)| addr.align_offset(alignment) == 0)
-                .map(|(chunk_index, _)| chunk_index)
-                // ALIGNMENT CHECK END
-                // Now look for the continuous region: are all succeeding chunks free?
-                // This is safe because earlier I skipped chunk_indices that are too close to
-                // the end.
-                .filter(|chunk_index| {
-                    // +1: chunk at chunk_index itself is already free
-                    // -1: num => index
-                    (chunk_index + 1..((chunk_index + 1) + (chunk_num_request - 1)))
-                        .all(|index| self.chunk_is_free(index))
-                })
-                // get the first
-                .next()
-                // OK or out of memory
-                .ok_or(ChunkAllocatorError::OutOfMemory);
+        let res = (start_index..(start_index + self.chunk_count()))
+            // Cope with wrapping indices (i.e. index 0 follows 31).
+            // This will lead to scenarios where it iterates like: 4,5,6,7,0,1,2,3
+            // (assuming there are 8 chunks).
+            .map(|index| index % self.chunk_count())
+            // It only makes sense to start the lookup at chunks that are available.
+            .filter(|chunk_index| self.chunk_is_free(*chunk_index))
+            // If the heap has 8 chunks and we need 4 but start the search at index 6, then we
+            // don't have enough continuous chunks to fulfill the request. Thus, we skip those.
+            .filter(|chunk_index| {
+                // example: index=0 + request=4 with count=4  => is okay
+                *chunk_index + chunk_num_request <= self.chunk_count()
+            })
+            // ALIGNMENT CHECK BEGIN
+            .map(|chunk_index| (chunk_index, unsafe { self.chunk_index_to_ptr(chunk_index) }))
+            .filter(|(_, addr)| addr.align_offset(alignment) == 0)
+            .map(|(chunk_index, _)| chunk_index)
+            // ALIGNMENT CHECK END
+            //
+            // Now look for the continuous region: are all succeeding chunks free?
+            // This is safe because earlier I skipped chunk_indices that are too close to
+            // the end. Return the first result.
+            .find(|chunk_index| {
+                // +1: chunk at chunk_index itself is already free (we checked this earlier)
+                // -1: indices start at 0
+                (chunk_index + 1..((chunk_index + 1) + chunk_num_request - 1))
+                    .all(|index| self.chunk_is_free(index))
+            })
+            // OK or out of memory
+            .ok_or(ChunkAllocatorError::OutOfMemory);
 
-            if let Ok(index) = res {
-                // TODO it feels false that this method updates this data structure but
-                //  does not mark the blocks as used! I think the upper method should do that!
-
-                // Only update "maybe_next_free_chunk" if it doesn't already point to a free location
-                if !self.chunk_is_free(self.maybe_next_free_chunk.0) || self.maybe_next_free_chunk.1 == 0 {
-                    self.maybe_next_free_chunk = ((index + 1) % self.chunk_count(), 1);
-                }
-
-            }
-
-            res
-        }
+        res
     }
 
     /// Returns the pointer to the beginning of the chunk.
@@ -354,6 +323,14 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             self.mark_chunk_as_used(i);
         }
 
+        // Only update "maybe_next_free_chunk" if it doesn't already point to a free location;
+        // For example, it could be that it was not used in this allocation.
+        //
+        // MAKE SURE THIS GETS CALLED AFTER USED CHUNKS ARE MARKED AS SUCH EARLIER.
+        if !self.chunk_is_free(self.maybe_next_free_chunk.0) {
+            self.maybe_next_free_chunk = ((index + 1) % self.chunk_count(), 1);
+        }
+
         let heap_ptr = unsafe { self.chunk_index_to_ptr(index) };
         log::trace!(
             "alloc: layout={layout:?}, ptr={heap_ptr:?}, #chunks={}",
@@ -388,7 +365,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         // This helps the next allocation to be faster. Currently, this prefers the smallest
         // possible continuous region. This prevents fragmentation but assumes/hopes the next
-        // allocation only needs one single chunk.
+        // allocation only needs as few chunks as possible (like a single one).
         if freed_chunks < self.maybe_next_free_chunk.1 {
             self.maybe_next_free_chunk = (index, freed_chunks);
         }
@@ -602,8 +579,7 @@ mod tests {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
         let mut alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
-        // I made this test for these two properties. Test might need to get adjusted if this
-        // changes
+        // I made this test for these two properties. Test might need to get adjusted if they change
         assert_eq!(alloc.chunk_size(), DEFAULT_CHUNK_SIZE);
         assert_eq!(alloc.chunk_count(), 32);
 
@@ -644,8 +620,7 @@ mod tests {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
         let mut alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
-        // I made this test for these two properties. Test might need to get adjusted if this
-        // changes
+        // I made this test for these two properties. Test might need to get adjusted if they change
         assert_eq!(alloc.chunk_size(), DEFAULT_CHUNK_SIZE);
         assert_eq!(alloc.chunk_count(), 32);
 
@@ -684,8 +659,7 @@ mod tests {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
         let mut alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
-        // I made this test for these two properties. Test might need to get adjusted if this
-        // changes
+        // I made this test for these two properties. Test might need to get adjusted if they change
         assert_eq!(alloc.chunk_size(), DEFAULT_CHUNK_SIZE);
         assert_eq!(alloc.chunk_count(), 32);
 

@@ -41,12 +41,14 @@ fn main() {
 
         // now free an arbitrary amount again to simulate intense heap usage
         // Every ~10th iteration I free 7 existing allocations; the heap will slowly grow until it is full
-        let count_all_allocations_not_freed_yet = all_allocations.iter().filter(|x| x.is_some()).count();
-        let count_allocations_to_free = if count_all_allocations_not_freed_yet > 10 && rng.gen_range(0..10) == 0 {
-            7
-        } else {
-            0
-        };
+        let count_all_allocations_not_freed_yet =
+            all_allocations.iter().filter(|x| x.is_some()).count();
+        let count_allocations_to_free =
+            if count_all_allocations_not_freed_yet > 10 && rng.gen_range(0..10) == 0 {
+                7
+            } else {
+                0
+            };
 
         all_allocations
             .iter_mut()

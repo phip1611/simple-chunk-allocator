@@ -1,6 +1,6 @@
 //! Module for [`ChunkAllocator`].
 
-
+#![no_std]
 #![deny(
     clippy::all,
     clippy::cargo,
@@ -17,10 +17,6 @@
 )]
 #![deny(missing_debug_implementations)]
 #![deny(rustdoc::all)]
-
-
-#![no_std]
-
 #![feature(allocator_api)]
 #![feature(const_mut_refs)]
 #![feature(const_for)]
@@ -36,5 +32,3 @@ pub use global::*;
 #[cfg(test)]
 #[macro_use]
 extern crate std;
-
-

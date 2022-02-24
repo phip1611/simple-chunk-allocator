@@ -115,7 +115,6 @@ mod tests {
     use super::*;
     use std::vec::Vec;
 
-
     /// Uses [`GlobalChunkAllocator`] against the Rust Allocator API to test
     /// the underlying [`ChunkAllocator`]. This is like an "integration" test
     /// whereas the other tests in the other module are unit tests.
@@ -129,13 +128,17 @@ mod tests {
         static mut BITMAP_MEM: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
         static ALLOCATOR: GlobalChunkAllocator = GlobalChunkAllocator::new();
         unsafe {
-            ALLOCATOR.init(HEAP_MEM.as_mut_slice(), BITMAP_MEM.as_mut_slice()).unwrap()
+            ALLOCATOR
+                .init(HEAP_MEM.as_mut_slice(), BITMAP_MEM.as_mut_slice())
+                .unwrap()
         };
 
         assert_eq!(0.0, ALLOCATOR.usage());
-        let vec1 = Vec::<u8, _>::with_capacity_in(DEFAULT_CHUNK_SIZE * 2, ALLOCATOR.allocator_api_glue());
+        let vec1 =
+            Vec::<u8, _>::with_capacity_in(DEFAULT_CHUNK_SIZE * 2, ALLOCATOR.allocator_api_glue());
         assert_eq!(25.0, ALLOCATOR.usage());
-        let vec2 = Vec::<u8, _>::with_capacity_in(DEFAULT_CHUNK_SIZE * 6, ALLOCATOR.allocator_api_glue());
+        let vec2 =
+            Vec::<u8, _>::with_capacity_in(DEFAULT_CHUNK_SIZE * 6, ALLOCATOR.allocator_api_glue());
         assert_eq!(100.0, ALLOCATOR.usage());
 
         // I can't test it like this :( Because of the design of the types of the Rust standard library,
@@ -147,10 +150,10 @@ mod tests {
         //});
         //assert!(panic_oom.is_err(), "allocator is out of memory");
 
-
         drop(vec1);
         assert_eq!(75.0, ALLOCATOR.usage());
-        let vec3 = Vec::<u8, _>::with_capacity_in(DEFAULT_CHUNK_SIZE * 1, ALLOCATOR.allocator_api_glue());
+        let vec3 =
+            Vec::<u8, _>::with_capacity_in(DEFAULT_CHUNK_SIZE * 1, ALLOCATOR.allocator_api_glue());
         assert_eq!(87.5, ALLOCATOR.usage());
 
         drop(vec2);

@@ -27,20 +27,26 @@ pub enum ChunkAllocatorError {
 /// Default chunk size used by [`ChunkAllocator`].
 pub const DEFAULT_CHUNK_SIZE: usize = 256;
 
-/// Allocator that takes a mutable reference to a continuous region of external memory used as
-/// backing storage. Additionally, it needs mutable memory to store its bookkeeping data.
+/// A simple `no_std` allocator written in Rust that manages memory in fixed-size chunks.
+/// [`ChunkAllocator`] can be used as `#[global_allocator]` with the synchronized wrapper type
+/// [`crate::GlobalChunkAllocator`] as well as with the `allocator_api` feature. The latter enables the
+/// usage in several types of the Rust standard library, such as `Vec` or `BTreeMap`. This is
+/// primarily interesting for testing but may also enable other use cases. This project originates
+/// from my [Diplom thesis project](https://github.com/phip1611/diplomarbeit-impl).
 ///
-/// It allocates memory in chunks of custom length, i.e. `256` or `4096`.
-/// Default value is [`DEFAULT_CHUNK_SIZE`].
+/// Because I had lots of struggles to create this (my first ever allocator), I outsourced it for
+/// better testability and to share my knowledge and findings with others in the hope that someone
+/// can learn from it in any way.
 ///
-/// It is mandatory to wrap this allocator by a mutex or a similar primitive, if it should be
-/// used in a global context. It can take (global) static memory arrays as backing storage.
-/// See [`crate::GlobalChunkAllocator`] for an implementation of that.
+/// This is a chunk allocator or also called fixed-size block allocator. It uses a mixture of the
+/// strategies next-fit and a best-fit. It tries to use the smallest gap for an allocation request
+/// to prevent fragmentation but this is no guarantee. Each allocation is a trade-off between a low
+/// allocation time and preventing fragmentation. The default chunk size is `256 bytes` but this
+/// can be changed as compile time const generic. Having a fixed-size block allocator enables an
+/// easy bookkeeping algorithm (a bitmap) but has as consequence that small allocations, such as
+/// `64 byte` will take at least one chunk/block of the chosen block size.
 ///
-/// This can be used to construct allocators, that manage the heap of `no_std` binaries.
-///
-/// The allocation strategy is a variant of `Next Fit`
-/// (see <https://www.geeksforgeeks.org/partition-allocation-methods-in-memory-management/>).
+/// The default chunk size is [`DEFAULT_CHUNK_SIZE`].
 #[derive(Debug)]
 pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Backing memory for heap.

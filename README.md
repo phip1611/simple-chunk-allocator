@@ -13,6 +13,7 @@ purposes. It helped me to understand a lot about allocators._ ⚠
 - ✅ `no_std` allocator with test coverage
 - ✅ uses static memory as backing storage (no paging/page table manipulations)
 - ✅ allocation strategy is a combination of next-fit and best-fit
+- ✅ reasonable fast with low code complexity
 - ✅ const compatibility (no runtime `init()` required)
 - ✅ efficient in scenarios where heap is a few dozens megabytes in size
 - ✅ user-friendly API
@@ -80,14 +81,17 @@ fn main() {
 This crate only builds with the nightly version. I developed it with version `1.61.0-nightly` (2022-03-05).
 
 ## Performance
-I executed my example `bench` in release mode on an Intel i7-1165G7 CPU and a heap of 160MB. It simulates a heavy usage
-of the heap in a single-threaded program with many random allocations and deallocations. The allocations very in their
-alignment. The table below shows the results of this benchmark as number of clock cycles. Increasing the chunk size
-reduces the size of the bookkeeping bitmap which accelerates lookup. However, a smaller chunk size occupies less heap
-when only very small allocations are required.
+I executed my example `bench` in release mode on an Intel i7-1165G7 CPU and a heap of `160MB` to get the results listed
+below. I used `RUSTFLAGS="-C target-cpu=native" cargo run --release --example bench` to get maximum performance.
+The benchmark simulates a heavy usage of the heap in a single-threaded program with many random allocations and
+deallocations. The allocations very in their alignment. The table below shows the results of this benchmark as number
+of clock cycles. Increasing the chunk size reduces the size of the bookkeeping bitmap which accelerates lookup.
+However, a smaller chunk size occupies less heap when only very small allocations are required.
 
-| Chunk Size    | # allocations | median | average | min | max    |
-|---------------|---------------|--------|---------|-----|--------|
-| 128           | 64965         | 967    | 1007    | 158 | 246793 |
-| 256 [DEFAULT] | 66105         | 629    | 672     | 111 | 46612  |
-| 512           | 68145         | 406    | 435     | 115 | 42273  |
+| Chunk Size    | # allocations | median | average | min | max   |
+|---------------|---------------|--------|---------|-----|-------|
+| 128           | 66960         | 858    | 884     | 129 | 46016 |
+| 256 [DEFAULT] | 68371         | 503    | 517     | 110 | 38047 |
+| 512           | 63154         | 355    | 366     | 102 | 40107 |
+
+The results vary slightly because each run gets influenced by some randomness.

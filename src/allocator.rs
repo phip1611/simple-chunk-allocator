@@ -23,6 +23,7 @@ SOFTWARE.
 */
 //! Module for [`ChunkAllocator`].
 
+use crate::compiler_hints::UNLIKELY;
 use core::alloc::AllocError;
 use core::alloc::Layout;
 use core::cell::Cell;
@@ -203,7 +204,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// - `chunk_index` describes the start chunk; i.e. the search space inside the backing storage
     #[inline(always)]
     fn chunk_is_free(&self, chunk_index: usize) -> bool {
-        assert!(
+        debug_assert!(
             chunk_index < self.chunk_count(),
             "chunk_index={} is bigger than max chunk index={}",
             chunk_index,
@@ -217,8 +218,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Marks a chunk as used, i.e. write a 1 into the bitmap at the right position.
     #[inline(always)]
     fn mark_chunk_as_used(&mut self, chunk_index: usize) {
-        assert!(chunk_index < self.chunk_count());
-        if !self.chunk_is_free(chunk_index) {
+        debug_assert!(chunk_index < self.chunk_count());
+        if UNLIKELY(!self.chunk_is_free(chunk_index)) {
             panic!(
                 "tried to mark chunk {} as used but it is already used",
                 chunk_index
@@ -232,8 +233,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Marks a chunk as free, i.e. write a 0 into the bitmap at the right position.
     #[inline(always)]
     fn mark_chunk_as_free(&mut self, chunk_index: usize) {
-        assert!(chunk_index < self.chunk_count());
-        if self.chunk_is_free(chunk_index) {
+        debug_assert!(chunk_index < self.chunk_count());
+        if UNLIKELY(self.chunk_is_free(chunk_index)) {
             panic!(
                 "tried to mark chunk {} as free but it is already free",
                 chunk_index
@@ -248,7 +249,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Returns the indices into the bitmap array of a given chunk index.
     #[inline(always)]
     fn chunk_index_to_bitmap_indices(&self, chunk_index: usize) -> (usize, usize) {
-        assert!(
+        debug_assert!(
             chunk_index < self.chunk_count(),
             "chunk_index out of range!"
         );
@@ -272,7 +273,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         chunk_num_request: usize,
         alignment: usize,
     ) -> Result<usize, ChunkAllocatorError> {
-        if chunk_num_request > self.chunk_count() {
+        if UNLIKELY(chunk_num_request > self.chunk_count()) {
             // out of memory
             return Err(ChunkAllocatorError::OutOfMemory);
         }
@@ -314,7 +315,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Returns the pointer to the beginning of the chunk.
     #[inline(always)]
     unsafe fn chunk_index_to_ptr(&self, chunk_index: usize) -> *mut u8 {
-        assert!(
+        debug_assert!(
             chunk_index < self.chunk_count(),
             "chunk_index out of range!"
         );
@@ -326,7 +327,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     unsafe fn ptr_to_chunk_index(&self, ptr: *const u8) -> usize {
         let heap_begin_inclusive = self.heap.as_ptr();
         let heap_end_exclusive = self.heap.as_ptr().add(self.heap.len());
-        assert!(
+        debug_assert!(
             heap_begin_inclusive <= ptr && ptr < heap_end_exclusive,
             "pointer {:?} is out of range {:?}..{:?} of the allocators backing storage",
             ptr,
@@ -350,7 +351,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[inline]
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        if self.is_first_alloc.get() {
+        if UNLIKELY(self.is_first_alloc.get()) {
             self.is_first_alloc.replace(false);
             // Zero bitmap
             self.bitmap.fill(0);
@@ -358,7 +359,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         // zero sized types may trigger this; according to the Rust doc of the `Allocator`
         // trait this is intended. I work around this by changing the size to 1.
-        let layout = if layout.size() == 0 {
+        let layout = if UNLIKELY(layout.size() == 0) {
             Layout::from_size_align(1, layout.align()).unwrap()
         } else {
             layout
@@ -368,7 +369,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         let index = self.find_free_continuous_memory_region(required_chunks, layout.align());
 
-        if index.is_err() {
+        if UNLIKELY(index.is_err()) {
             log::warn!(
                 "Out of Memory. Can't fulfill the requested layout: {:?}. Current usage is: {}%/{}byte",
                 layout,
@@ -402,14 +403,14 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         ))
     }
 
-    #[track_caller]
-    #[inline]
     /// # Safety
     /// Unsafe if memory gets de-allocated that is still in use.
+    #[track_caller]
+    #[inline]
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
         // zero sized types may trigger this; according to the Rust doc of the `Allocator`
         // trait this is intended. I work around this by changing the size to 1.
-        let layout = if layout.size() == 0 {
+        let layout = if UNLIKELY(layout.size() == 0) {
             Layout::from_size_align(1, layout.align()).unwrap()
         } else {
             layout

@@ -32,7 +32,9 @@ use std::ptr::NonNull;
 /// Benchmark that helps me to check how the search time for new blocks
 /// develops when the heap is getting full.
 ///
-/// Execute with: `cargo run --release --example bench`
+/// Execute with `cargo run --release --example bench`. Or to get even better performance,
+/// execute it with `RUSTFLAGS="-C target-cpu=native" cargo run --example bench --release`
+///
 fn main() {
     // 16 MB
     const HEAP_SIZE: usize = 0x1000000;

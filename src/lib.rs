@@ -36,6 +36,7 @@ SOFTWARE.
 //! - ✅ `no_std` allocator with test coverage
 //! - ✅ uses static memory as backing storage (no paging/page table manipulations)
 //! - ✅ allocation strategy is a combination of next-fit and best-fit
+//! - ✅ reasonable fast with low code complexity
 //! - ✅ const compatibility (no runtime `init()` required)
 //! - ✅ efficient in scenarios where heap is a few dozens megabytes in size
 //! - ✅ user-friendly API
@@ -122,10 +123,12 @@ SOFTWARE.
 #![feature(nonnull_slice_from_raw_parts)]
 #![feature(slice_ptr_get)]
 #![feature(const_ptr_is_null)]
+#![feature(core_intrinsics)]
 
 #[macro_use]
 mod macros;
 mod allocator;
+mod compiler_hints;
 mod global;
 mod page_aligned;
 

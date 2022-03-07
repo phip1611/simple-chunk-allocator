@@ -22,6 +22,14 @@ exclude = [
     ".github"
 ]
 
+# This affects at least the example build with this crate. I don't know if this affects the build of this
+# crate when other crates use it as dependency. I don't think so.
+[profile.release]
+# https://doc.rust-lang.org/cargo/reference/profiles.html
+# Changes for maximum performance: only differences to default settings
+codegen-units = 1
+lto = true
+
 [dependencies]
 libm = "0.2"
 log = "0.4"

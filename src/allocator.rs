@@ -74,6 +74,8 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// This optimization mechanism prevents the need to iterate over all chunks everytime which
     /// can take up to tens of thousands of CPU cycles in the worst case (full heap).
     maybe_next_free_chunk: (usize, usize),
+    /// Counts the number of blocks in use.
+    chunks_in_use: usize,
 }
 
 impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
@@ -127,6 +129,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             bitmap,
             is_first_alloc: Cell::new(true),
             maybe_next_free_chunk: (0, chunk_count),
+            chunks_in_use: 0,
         })
     }
 
@@ -167,6 +170,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             bitmap,
             is_first_alloc: Cell::new(true),
             maybe_next_free_chunk: (0, chunk_count),
+            chunks_in_use: 0,
         }
     }
 
@@ -187,15 +191,12 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Returns the current memory usage in percentage.
     #[inline]
     pub fn usage(&self) -> f32 {
-        let mut used_chunks = 0;
-        let chunk_count = self.chunk_count();
-        for chunk_i in 0..chunk_count {
-            if !self.chunk_is_free(chunk_i) {
-                used_chunks += 1;
-            }
+        if self.chunks_in_use == 0 {
+            0.0
+        } else {
+            let ratio = self.chunks_in_use as f32 / self.chunk_count() as f32;
+            libm::roundf(ratio * 10000.0) / 100.0
         }
-        let ratio = used_chunks as f32 / chunk_count as f32;
-        libm::roundf(ratio * 10000.0) / 100.0
     }
 
     /// Returns whether a chunk is free according to the bitmap.
@@ -386,6 +387,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         for i in index..index + required_chunks {
             self.mark_chunk_as_used(i);
         }
+        self.chunks_in_use += required_chunks;
 
         // Only update "maybe_next_free_chunk" if it doesn't already point to a free location;
         // For example, it could be that it was not used in this allocation.
@@ -428,6 +430,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         for i in index..index + freed_chunks {
             self.mark_chunk_as_free(i);
         }
+        self.chunks_in_use -= freed_chunks;
 
         // This helps the next allocation to be faster. Currently, this prefers the smallest
         // possible continuous region. This prevents fragmentation but assumes/hopes the next

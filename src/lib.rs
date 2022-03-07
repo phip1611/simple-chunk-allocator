@@ -11,6 +11,7 @@
 //!
 //! ## TL;DR
 //! - ✅ `no_std` allocator with test coverage
+//! - ✅ uses static memory as backing storage (no paging/page table manipulations)
 //! - ✅ allocation strategy is a combination of next-fit and best-fit
 //! - ✅ const compatibility (no runtime `init()` required)
 //! - ✅ efficient in scenarios where heap is a few dozens megabytes in size

@@ -38,7 +38,6 @@ pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
 ///
 /// ```rust
 /// #![feature(const_mut_refs)]
-/// #![feature(const_ptr_is_null)]
 ///
 /// use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
 ///

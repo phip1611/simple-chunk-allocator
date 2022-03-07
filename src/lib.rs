@@ -67,7 +67,6 @@ SOFTWARE.
 //! ```rust
 //! #![feature(const_mut_refs)]
 //! #![feature(allocator_api)]
-//! #![feature(const_ptr_is_null)]
 //!
 //! use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
 //!

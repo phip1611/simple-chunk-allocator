@@ -6,7 +6,7 @@ binaries where you want to manage a heap of a few megabytes without complex feat
 management. Instead, this allocator gets a fixed/static memory region and allocates memory from there. This memory
 region can be contained inside the executable file that uses this allocator.
 """
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = [
     "Philipp Schuster <phip1611@gmail.com>"
@@ -17,7 +17,7 @@ readme = "README.md"
 license = "MIT"
 homepage = "https://github.com/phip1611/simple-chunk-allocator"
 repository = "https://github.com/phip1611/simple-chunk-allocator"
-documentation = "https://github.com/phip1611/simple-chunk-allocator"
+documentation = "https://docs.rs/simple-chunk-allocator"
 exclude = [
     ".github"
 ]

@@ -75,8 +75,14 @@ SOFTWARE.
 //! // page-aligned addresses.
 //!
 //! /// Backing storage for heap (1Mib). (read+write) static memory in final executable.
+//! ///
+//! /// heap!: first argument is chunk size, second argument is amount of chunks.
+//! ///        If no arguments are provided it falls back to defaults.
 //! static mut HEAP: PageAligned<[u8; 1048576]> = heap!();
 //! /// Backing storage for heap bookkeeping bitmap. (read+write) static memory in final executable.
+//! ///
+//! /// heap_bitmap!: first argument is amount of chunks.
+//! ///               If no argument is provided it falls back to a default.
 //! static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 //!
 //! #[global_allocator]

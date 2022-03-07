@@ -38,9 +38,7 @@ This project originates from my [Diplom thesis project](https://github.com/phip1
 originally had lots of struggles to create this (my first ever allocator), I outsourced it for better testability and
 to share my knowledge and findings with others in the hope that someone can learn from it in any way.
 
-
 # Minimal Code Example
-
 ```rust
 #![feature(const_mut_refs)]
 #![feature(allocator_api)]
@@ -52,8 +50,14 @@ use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligne
 // page-aligned addresses.
 
 /// Backing storage for heap (1Mib). (read+write) static memory in final executable.
+///
+/// heap!: first argument is chunk size, second argument is amount of chunks.
+///        If no arguments are provided it falls back to defaults.
 static mut HEAP: PageAligned<[u8; 1048576]> = heap!();
 /// Backing storage for heap bookkeeping bitmap. (read+write) static memory in final executable.
+///
+/// heap_bitmap!: first argument is amount of chunks.
+///               If no argument is provided it falls back to a default.
 static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 
 #[global_allocator]
@@ -83,7 +87,7 @@ This crate only builds with the nightly version. I developed it with version `1.
 I executed my example `bench` in release mode on an Intel i7-1165G7 CPU and a heap of `160MB` to get the results listed
 below. I used `RUSTFLAGS="-C target-cpu=native" cargo run --release --example bench` to get maximum performance.
 The benchmark simulates a heavy usage of the heap in a single-threaded program with many random allocations and
-deallocations. The allocations very in their alignment. The table below shows the results of this benchmark as number
+deallocations. The allocations vary in their alignment. The table below shows the results of this benchmark as number
 of clock cycles. Increasing the chunk size reduces the size of the bookkeeping bitmap which accelerates lookup.
 However, a smaller chunk size occupies less heap when only very small allocations are required.
 

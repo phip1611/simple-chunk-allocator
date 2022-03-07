@@ -304,9 +304,13 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             // the end. Return the first result.
             .find(|chunk_index| {
                 // +1: chunk at chunk_index itself is already free (we checked this earlier)
+                // inclusive
+                let from = chunk_index + 1;
                 // -1: indices start at 0
-                (chunk_index + 1..((chunk_index + 1) + chunk_num_request - 1))
-                    .all(|index| self.chunk_is_free(index))
+                // exclusive
+                let to = from + chunk_num_request - 1;
+
+                (from..to).all(|index| self.chunk_is_free(index))
             })
             // OK or out of memory
             .ok_or(ChunkAllocatorError::OutOfMemory)

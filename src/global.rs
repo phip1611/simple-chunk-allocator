@@ -107,7 +107,6 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a
 /// # Example
 /// ```ignore
 /// // ...
-/// ALLOCATOR.init(HEAP_MEM.as_mut_slice(), BITMAP_MEM.as_mut_slice()).unwrap()
 ///
 /// // Vector from the standard library will use my custom allocator instead.
 /// let vec = Vec::<u8, _>::with_capacity_in(123, ALLOCATOR.allocator_api_glue());

@@ -1,9 +1,26 @@
 [package]
 name = "simple-chunk-allocator"
+description = """
+A simple `no_std` allocator written in Rust that manages memory in fixed-size chunks/blocks. Useful for basic `no_std`
+binaries where you want to manage a heap of a few megabytes without complex features such as paging/page table
+management. Instead, this allocator gets a fixed/static memory region and allocates memory from there. This memory
+region can be contained inside the executable file that uses this allocator.
+"""
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = [
+    "Philipp Schuster <phip1611@gmail.com>"
+]
+keywords = ["allocator", "memory"]
+categories = ["memory-management", "no-std"]
+readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/phip1611/simple-chunk-allocator"
+repository = "https://github.com/phip1611/simple-chunk-allocator"
+documentation = "https://github.com/phip1611/simple-chunk-allocator"
+exclude = [
+    ".github"
+]
 
 [dependencies]
 libm = "0.2"

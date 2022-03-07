@@ -27,7 +27,6 @@ use core::alloc::AllocError;
 use core::alloc::Layout;
 use core::cell::Cell;
 use core::ptr::NonNull;
-use libm;
 
 /// Possible errors of [`ChunkAllocator`].
 #[derive(Debug)]
@@ -98,11 +97,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::BadChunkSize);
         }
 
-        let heap_is_empty = heap.len() == 0;
         let heap_starts_at_0 = heap.as_ptr().is_null();
         let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
 
-        if heap_is_empty || heap_starts_at_0 || !heap_is_multiple_of_chunk_size {
+        if heap.is_empty() || heap_starts_at_0 || !heap_is_multiple_of_chunk_size {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
@@ -135,12 +133,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     pub const fn new_const(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
         assert!(CHUNK_SIZE > 0, "chunk size must not be zero!");
 
-        let heap_is_empty = heap.len() == 0;
         let heap_starts_at_0 = heap.as_ptr().is_null();
         let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
 
         assert!(
-            !heap_is_empty && !heap_starts_at_0 && heap_is_multiple_of_chunk_size,
+            !heap.is_empty() && !heap_starts_at_0 && heap_is_multiple_of_chunk_size,
             "heap must be not empty and a multiple of the chunk size"
         );
 
@@ -175,7 +172,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
     /// Returns number of chunks.
     #[inline]
-    pub fn chunk_count(&self) -> usize {
+    pub const fn chunk_count(&self) -> usize {
         // size is a multiple of CHUNK_SIZE;
         // ensured in new()
         self.capacity() / CHUNK_SIZE
@@ -224,7 +221,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
         // xor => keep all bits, except bitflip at relevant position
-        self.bitmap[byte_i] = self.bitmap[byte_i] ^ (1 << bit);
+        self.bitmap[byte_i] ^= 1 << bit;
     }
 
     /// Marks a chunk as free, i.e. write a 0 into the bitmap at the right position.
@@ -277,7 +274,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         let start_index = self.maybe_next_free_chunk.0;
 
-        let res = (start_index..(start_index + self.chunk_count()))
+        (start_index..(start_index + self.chunk_count()))
             // Cope with wrapping indices (i.e. index 0 follows 31).
             // This will lead to scenarios where it iterates like: 4,5,6,7,0,1,2,3
             // (assuming there are 8 chunks).
@@ -306,9 +303,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
                     .all(|index| self.chunk_is_free(index))
             })
             // OK or out of memory
-            .ok_or(ChunkAllocatorError::OutOfMemory);
-
-        res
+            .ok_or(ChunkAllocatorError::OutOfMemory)
     }
 
     /// Returns the pointer to the beginning of the chunk.
@@ -338,7 +333,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
     /// Calculates the number of required chunks to fulfill an allocation request.
     #[inline(always)]
-    fn calc_required_chunks(&self, size: usize) -> usize {
+    const fn calc_required_chunks(&self, size: usize) -> usize {
         if size % CHUNK_SIZE == 0 {
             size / CHUNK_SIZE
         } else {
@@ -368,7 +363,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         let index = self.find_free_continuous_memory_region(required_chunks, layout.align());
 
-        if let Err(_) = index {
+        if index.is_err() {
             log::warn!(
                 "Out of Memory. Can't fulfill the requested layout: {:?}. Current usage is: {}%/{}byte",
                 layout,
@@ -404,6 +399,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
     #[track_caller]
     #[inline]
+    /// # Safety
+    /// Unsafe if memory gets de-allocated that is still in use.
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
         // zero sized types may trigger this; according to the Rust doc of the `Allocator`
         // trait this is intended. I work around this by changing the size to 1.

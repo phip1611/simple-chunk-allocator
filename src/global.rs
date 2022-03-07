@@ -78,7 +78,7 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
 
     /// Returns an instance of [`AllocatorApiGlue`].
     #[inline]
-    pub fn allocator_api_glue<'b>(&'b self) -> AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
+    pub const fn allocator_api_glue<'b>(&'b self) -> AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
         AllocatorApiGlue(self)
     }
 }

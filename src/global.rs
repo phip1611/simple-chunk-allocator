@@ -8,40 +8,29 @@ use core::ptr::NonNull;
 /// used then this equals to 1MiB of memory.
 pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
 
-/// Synchronized wrapper around [`ChunkAllocator`] that implements the Rust traits
+/// Synchronized high-level wrapper around [`ChunkAllocator`] that implements the Rust traits
 /// [`GlobalAlloc`] which enables the usage as global allocator. The method
 /// [`GlobalChunkAllocator::allocator_api_glue`] returns an object of type [`AllocatorApiGlue`]
 /// which can be used with the `allocator_api` feature.
 ///
-/// # Code Example
-/// ```ignore
-/// #![feature(allocator_api)]
+/// ```rust
+/// #![feature(const_mut_refs)]
+/// #![feature(const_ptr_is_null)]
 ///
-/// use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
+/// use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
 ///
-/// const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * 8;
-/// const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
-/// const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
+/// // The macros help to get a correctly sized arrays types.
+/// // I page-align them for better caching and to improve the availability of
+/// // page-aligned addresses.
 ///
-/// static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-/// static mut BITMAP_MEM: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
+/// /// Backing storage for heap (1Mib). (read+write) static memory in final executable.
+/// static mut HEAP: PageAligned<[u8; 1048576]> = heap!();
+/// /// Backing storage for heap bookkeeping bitmap. (read+write) static memory in final executable.
+/// static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 ///
 /// #[global_allocator]
-/// static ALLOCATOR: GlobalChunkAllocator = GlobalChunkAllocator::new();
-///
-/// fn entry() {
-///     unsafe {
-///         ALLOCATOR.init(HEAP_MEM.as_mut_slice(), BITMAP_MEM.as_mut_slice())
-///           .unwrap()
-///     };
-///
-///     // use global allocator
-///     let _boxed_array = Box::new([0, 1, 2, 3, 4]);
-///     let _msg = String::from("hello, world");
-///
-///     // example: allocator_api-feature
-///     let _vec = Vec::<u8, _ >::with_capacity_in(123, ALLOCATOR.allocator_api_glue());
-/// }
+/// static ALLOCATOR: GlobalChunkAllocator =
+///     unsafe { GlobalChunkAllocator::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
 /// ```
 #[derive(Debug)]
 pub struct GlobalChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE>(
@@ -49,7 +38,9 @@ pub struct GlobalChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE
 );
 
 impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
+
     /// Constructor.
+    #[inline]
     pub const fn new(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
         let inner_alloc = ChunkAllocator::<CHUNK_SIZE>::new_const(heap, bitmap);
         let inner_alloc = spin::Mutex::new(inner_alloc);
@@ -57,21 +48,27 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
     }
 
     /// Returns the usage of the allocator in percentage.
+    #[inline]
     pub fn usage(&self) -> f32 {
         self.0.lock().usage()
     }
 
     /// Returns an instance of [`AllocatorApiGlue`].
+    #[inline]
     pub fn allocator_api_glue<'b>(&'b self) -> AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
         AllocatorApiGlue(self)
     }
 }
 
 unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a, CHUNK_SIZE> {
+
+    #[inline]
+    #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.0.lock().allocate(layout).unwrap().as_mut_ptr()
     }
 
+    #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         self.0.lock().deallocate(NonNull::new(ptr).unwrap(), layout)
     }
@@ -98,10 +95,14 @@ pub struct AllocatorApiGlue<'a, 'b, const CHUNK_SIZE: usize>(
 );
 
 unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
+
+    #[inline]
+    #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self.0 .0.lock().allocate(layout)
     }
 
+    #[inline]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         self.0 .0.lock().deallocate(ptr, layout)
     }

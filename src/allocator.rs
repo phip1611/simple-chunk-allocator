@@ -10,8 +10,9 @@ use libm;
 #[derive(Debug)]
 pub enum ChunkAllocatorError {
     /// The backing memory for the heap must be
-    /// - an even multiple of [`DEFAULT_CHUNK_SIZE`], and
-    /// - a multiple of 8 to be correctly represented by the bitmap.
+    /// - not empty
+    /// - an multiple of the used chunk size that is a multiple of 8, and
+    /// - not start at 0.
     BadHeapMemory,
     /// The number of bits in the backing memory for the heap bitmap
     /// must match the number of chunks in the heap.
@@ -27,26 +28,12 @@ pub enum ChunkAllocatorError {
 /// Default chunk size used by [`ChunkAllocator`].
 pub const DEFAULT_CHUNK_SIZE: usize = 256;
 
-/// A simple `no_std` allocator written in Rust that manages memory in fixed-size chunks.
-/// [`ChunkAllocator`] can be used as `#[global_allocator]` with the synchronized wrapper type
-/// [`crate::GlobalChunkAllocator`] as well as with the `allocator_api` feature. The latter enables the
-/// usage in several types of the Rust standard library, such as `Vec` or `BTreeMap`. This is
-/// primarily interesting for testing but may also enable other use cases. This project originates
-/// from my [Diplom thesis project](https://github.com/phip1611/diplomarbeit-impl).
+/// Low-level chunk allocator that operates on the provided backing memory. Allocates memory
+/// with a variant of the strategies next-fit and best-fit.
 ///
-/// Because I had lots of struggles to create this (my first ever allocator), I outsourced it for
-/// better testability and to share my knowledge and findings with others in the hope that someone
-/// can learn from it in any way.
-///
-/// This is a chunk allocator or also called fixed-size block allocator. It uses a mixture of the
-/// strategies next-fit and a best-fit. It tries to use the smallest gap for an allocation request
-/// to prevent fragmentation but this is no guarantee. Each allocation is a trade-off between a low
-/// allocation time and preventing fragmentation. The default chunk size is `256 bytes` but this
-/// can be changed as compile time const generic. Having a fixed-size block allocator enables an
-/// easy bookkeeping algorithm (a bitmap) but has as consequence that small allocations, such as
-/// `64 byte` will take at least one chunk/block of the chosen block size.
-///
-/// The default chunk size is [`DEFAULT_CHUNK_SIZE`].
+/// The default chunk size is [`DEFAULT_CHUNK_SIZE`]. A large chunk size has the negative impact
+/// that small allocations will consume at least one chunk. A small chunk size has the negative
+/// impact that the allocation may take slightly longer.
 #[derive(Debug)]
 pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Backing memory for heap.
@@ -89,9 +76,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
 
         let heap_is_empty = heap.len() == 0;
+        let heap_starts_at_0 = heap.as_ptr().is_null();
         let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
 
-        if heap_is_empty || !heap_is_multiple_of_chunk_size {
+        if heap_is_empty || heap_starts_at_0 || !heap_is_multiple_of_chunk_size {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
@@ -125,10 +113,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         assert!(CHUNK_SIZE > 0, "chunk size must not be zero!");
 
         let heap_is_empty = heap.len() == 0;
+        let heap_starts_at_0 = heap.as_ptr().is_null();
         let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
 
         assert!(
-            !heap_is_empty && heap_is_multiple_of_chunk_size,
+            !heap_is_empty && !heap_starts_at_0 && heap_is_multiple_of_chunk_size,
             "heap must be not empty and a multiple of the chunk size"
         );
 
@@ -336,6 +325,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
     #[track_caller]
     #[inline]
+    #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         if self.is_first_alloc.get() {
             self.is_first_alloc.replace(false);
@@ -483,19 +473,21 @@ mod tests {
             ChunkAllocator::<0>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
             ChunkAllocatorError::BadChunkSize
         ));
-        /*std::panic::catch_unwind(|| {
+        std::panic::catch_unwind(|| {
             let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
             ChunkAllocator::<0>::new_const(&mut heap, &mut heap_bitmap);
-        }).expect_err("expected panic because of bad chunk size");
+        })
+        .expect_err("expected panic because of bad chunk size");
 
         assert!(matches!(
-            ChunkAllocator::<1>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
+            ChunkAllocator::<3>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
             ChunkAllocatorError::BadHeapMemory
         ));
         std::panic::catch_unwind(|| {
             let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
-            ChunkAllocator::<1>::new_const(&mut heap, &mut heap_bitmap);
-        }).expect_err("expected panic because of bad heap memory");
+            ChunkAllocator::<3>::new_const(&mut heap, &mut heap_bitmap);
+        })
+        .expect_err("expected panic because of bad heap memory");
 
         assert!(matches!(
             ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut [0]).unwrap_err(),
@@ -504,7 +496,8 @@ mod tests {
         std::panic::catch_unwind(|| {
             let (mut heap, _) = helpers::create_heap_and_bitmap_vectors();
             ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new_const(&mut heap, &mut [0]);
-        }).expect_err("expected panic because of bad bitmap memory");*/
+        })
+        .expect_err("expected panic because of bad bitmap memory");
     }
 
     /// Initializes the allocator with backing memory gained on the heap.

@@ -61,7 +61,6 @@ pub struct GlobalChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE
 );
 
 impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
-
     /// Constructor.
     #[inline]
     pub const fn new(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
@@ -84,7 +83,6 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
 }
 
 unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a, CHUNK_SIZE> {
-
     #[inline]
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -118,7 +116,6 @@ pub struct AllocatorApiGlue<'a, 'b, const CHUNK_SIZE: usize>(
 );
 
 unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
-
     #[inline]
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {

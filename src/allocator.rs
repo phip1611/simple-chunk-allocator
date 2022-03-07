@@ -112,7 +112,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
-        let bitmap_covers_all_chunks_exact = chunk_count == bitmap.len() * 8;
+        let bitmap_chunk_capacity = bitmap.len() * 8;
+        let bitmap_covers_all_chunks_exact = chunk_count == bitmap_chunk_capacity;
         if !bitmap_covers_all_chunks_exact {
             return Err(ChunkAllocatorError::BadBitmapMemory);
         }
@@ -150,7 +151,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             "chunk count must be a multiple of 8"
         );
 
-        let bitmap_covers_all_chunks_exact = chunk_count == bitmap.len() * 8;
+        let bitmap_chunk_capacity = bitmap.len() * 8;
+        let bitmap_covers_all_chunks_exact = chunk_count == bitmap_chunk_capacity;
         assert!(
             bitmap_covers_all_chunks_exact,
             "the bitmap must cover the amount of chunks exactly"

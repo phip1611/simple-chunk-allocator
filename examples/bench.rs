@@ -36,14 +36,15 @@ use std::ptr::NonNull;
 fn main() {
     // 16 MB
     const HEAP_SIZE: usize = 0x1000000;
-    const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
+    const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
+    const CHUNK_COUNT: usize = HEAP_SIZE / CHUNK_SIZE;
     const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
     let mut heap = Vec::with_capacity_in(HEAP_SIZE, PageAlignedGlobalAlloc);
     (0..heap.capacity()).for_each(|_| heap.push(0));
     let mut heap_bitmap = Vec::with_capacity_in(BITMAP_SIZE, PageAlignedGlobalAlloc);
     (0..heap_bitmap.capacity()).for_each(|_| heap_bitmap.push(0));
-    let mut alloc: ChunkAllocator =
-        ChunkAllocator::new(heap.as_mut_slice(), heap_bitmap.as_mut_slice()).unwrap();
+    let mut alloc =
+        ChunkAllocator::<CHUNK_SIZE>::new(heap.as_mut_slice(), heap_bitmap.as_mut_slice()).unwrap();
 
     let now_fn = || unsafe { x86::time::rdtscp() };
 

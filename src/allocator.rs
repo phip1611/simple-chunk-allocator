@@ -88,6 +88,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// - heap length must be a multiple of `CHUNK_SIZE`
     /// - the heap must be not empty
     /// - the bitmap must match the number of chunks
+    ///
+    /// It is recommended that the heap and the bitmap both start at page-aligned addresses for
+    /// better performance and to enable a faster search for correctly aligned addresses.
     #[inline]
     pub const fn new(
         heap: &'a mut [u8],

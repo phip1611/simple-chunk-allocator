@@ -61,7 +61,10 @@ pub struct GlobalChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE
 );
 
 impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
-    /// Constructor.
+    /// High-level constructor around [`ChunkAllocator::<CHUNK_SIZE>::new_const`].
+    ///
+    /// It is recommended that the heap and the bitmap both start at page-aligned addresses for
+    /// better performance and to enable a faster search for correctly aligned addresses.
     #[inline]
     pub const fn new(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
         let inner_alloc = ChunkAllocator::<CHUNK_SIZE>::new_const(heap, bitmap);

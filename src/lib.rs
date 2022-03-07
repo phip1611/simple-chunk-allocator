@@ -17,34 +17,39 @@
 //! easy bookkeeping algorithm (a bitmap) but has as consequence that small allocations, such as
 //! `64 byte` will take at least one chunk/block of the chosen block size.
 //!
-//! # Code Example
-//! ```ignore
+//! # Example
+//! ```rust
+//! #![feature(const_mut_refs)]
 //! #![feature(allocator_api)]
 //!
-//! use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
+//! use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
 //!
-//! const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * 8;
-//! const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
-//! const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
+//! // The macros help to get a correctly sized arrays types.
+//! // I page-align them for better caching and to improve the availability of
+//! // page-aligned addresses.
 //!
-//! static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-//! static mut BITMAP_MEM: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
+//! /// Backing storage for heap (1Mib). (read+write) static memory in final executable.
+//! static mut HEAP: PageAligned<[u8; 1048576]> = heap!();
+//! /// Backing storage for heap bookkeeping bitmap. (read+write) static memory in final executable.
+//! static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 //!
 //! #[global_allocator]
-//! static ALLOCATOR: GlobalChunkAllocator = GlobalChunkAllocator::new();
+//! static ALLOCATOR: GlobalChunkAllocator =
+//!     unsafe { GlobalChunkAllocator::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
 //!
-//! fn entry() {
-//!     unsafe {
-//!         ALLOCATOR.init(HEAP_MEM.as_mut_slice(), BITMAP_MEM.as_mut_slice())
-//!           .unwrap()
-//!     };
+//! fn main() {
+//!     // at this point, the allocator already got used a bit by the Rust runtime that executes
+//!     // before main() gets called. This is not the case if a `no_std` binary gets produced.
+//!     let old_usage = ALLOCATOR.usage();
+//!     let mut vec = Vec::new();
+//!     vec.push(1);
+//!     vec.push(2);
+//!     vec.push(3);
+//!     assert!(ALLOCATOR.usage() > old_usage);
 //!
-//!     // use global allocator
-//!     let _boxed_array = Box::new([0, 1, 2, 3, 4]);
-//!     let _msg = String::from("hello, world");
-//!
-//!     // example: allocator_api-feature
-//!     let _vec = Vec::<u8, _ >::with_capacity_in(123, ALLOCATOR.allocator_api_glue());
+//!     // use "allocator_api"-feature. You can use this if "ALLOCATOR" is not registered as
+//!     // the global allocator. Otherwise, it is already the default.
+//!     let _boxed = Box::new_in([1, 2, 3], ALLOCATOR.allocator_api_glue());
 //! }
 //! ```
 
@@ -71,11 +76,16 @@
 #![feature(nonnull_slice_from_raw_parts)]
 #![feature(slice_ptr_get)]
 
+#[macro_use]
+mod macros;
 mod allocator;
 mod global;
+mod page_aligned;
 
 pub use allocator::*;
 pub use global::*;
+pub use macros::*;
+pub use page_aligned::PageAligned;
 
 #[cfg(test)]
 #[macro_use]

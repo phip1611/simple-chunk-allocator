@@ -4,6 +4,10 @@ use crate::{ChunkAllocator, DEFAULT_CHUNK_SIZE};
 use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
 use core::ptr::NonNull;
 
+/// The default number of chunks. If the default chunk size of [`DEFAULT_CHUNK_SIZE`] gets
+/// used then this equals to 1MiB of memory.
+pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
+
 /// Synchronized wrapper around [`ChunkAllocator`] that implements the Rust traits
 /// [`GlobalAlloc`] which enables the usage as global allocator. The method
 /// [`GlobalChunkAllocator::allocator_api_glue`] returns an object of type [`AllocatorApiGlue`]
@@ -41,34 +45,20 @@ use core::ptr::NonNull;
 /// ```
 #[derive(Debug)]
 pub struct GlobalChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE>(
-    // option because it needs to get initialized first
-    spin::Mutex<Option<ChunkAllocator<'a, CHUNK_SIZE>>>,
+    spin::Mutex<ChunkAllocator<'a, CHUNK_SIZE>>,
 );
 
 impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
-    /// Constructor. Don't forget to call [`Self::init`] first, before actual
-    /// allocations happen!
-    pub const fn new() -> Self {
-        let lock = spin::Mutex::new(None);
-        Self(lock)
-    }
-
-    /// Initializes the underlying [`ChunkAllocator`].
-    pub fn init(&self, heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Result<(), ()> {
-        let mut lock = self.0.lock();
-        if lock.is_some() {
-            log::warn!("Allocator already initialized!");
-            Err(())
-        } else {
-            let alloc = ChunkAllocator::<CHUNK_SIZE>::new(heap, bitmap).unwrap();
-            lock.replace(alloc);
-            Ok(())
-        }
+    /// Constructor.
+    pub const fn new(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
+        let inner_alloc = ChunkAllocator::<CHUNK_SIZE>::new_const(heap, bitmap);
+        let inner_alloc = spin::Mutex::new(inner_alloc);
+        Self(inner_alloc)
     }
 
     /// Returns the usage of the allocator in percentage.
     pub fn usage(&self) -> f32 {
-        self.0.lock().as_ref().unwrap().usage()
+        self.0.lock().usage()
     }
 
     /// Returns an instance of [`AllocatorApiGlue`].
@@ -79,21 +69,11 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
 
 unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a, CHUNK_SIZE> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.0
-            .lock()
-            .as_mut()
-            .expect("call init first")
-            .allocate(layout)
-            .unwrap()
-            .as_mut_ptr()
+        self.0.lock().allocate(layout).unwrap().as_mut_ptr()
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.0
-            .lock()
-            .as_mut()
-            .expect("call init first")
-            .deallocate(NonNull::new(ptr).unwrap(), layout)
+        self.0.lock().deallocate(NonNull::new(ptr).unwrap(), layout)
     }
 }
 
@@ -119,21 +99,11 @@ pub struct AllocatorApiGlue<'a, 'b, const CHUNK_SIZE: usize>(
 
 unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        self.0
-             .0
-            .lock()
-            .as_mut()
-            .expect("call init first")
-            .allocate(layout)
+        self.0 .0.lock().allocate(layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        self.0
-             .0
-            .lock()
-            .as_mut()
-            .expect("call init first")
-            .deallocate(ptr, layout)
+        self.0 .0.lock().deallocate(ptr, layout)
     }
 }
 
@@ -153,12 +123,8 @@ mod tests {
 
         static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
         static mut BITMAP_MEM: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
-        static ALLOCATOR: GlobalChunkAllocator = GlobalChunkAllocator::new();
-        unsafe {
-            ALLOCATOR
-                .init(HEAP_MEM.as_mut_slice(), BITMAP_MEM.as_mut_slice())
-                .unwrap()
-        };
+        static ALLOCATOR: GlobalChunkAllocator =
+            GlobalChunkAllocator::new(unsafe { &mut HEAP_MEM }, unsafe { &mut BITMAP_MEM });
 
         assert_eq!(0.0, ALLOCATOR.usage());
         let vec1 =

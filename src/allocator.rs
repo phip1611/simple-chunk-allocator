@@ -16,7 +16,7 @@ pub enum ChunkAllocatorError {
     /// The number of bits in the backing memory for the heap bitmap
     /// must match the number of chunks in the heap.
     BadBitmapMemory,
-    /// The chunk size must be a multiple of 8 and not 0.
+    /// The chunk size must be not 0.
     BadChunkSize,
     /// The heap is either completely full or to fragmented to serve
     /// the request. Also, it may happen that the alignment can't get
@@ -67,7 +67,6 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
 }
 
 impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
-
     /// Returns the used chunk size.
     #[inline]
     pub const fn chunk_size(&self) -> usize {
@@ -78,26 +77,34 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Zeroes the bitmap.
     ///
     /// - heap length must be a multiple of `CHUNK_SIZE`
-    /// - the heap must be >= 0
+    /// - the heap must be not empty
+    /// - the bitmap must match the number of chunks
     #[inline]
     pub const fn new(
         heap: &'a mut [u8],
         bitmap: &'a mut [u8],
     ) -> Result<Self, ChunkAllocatorError> {
-        if CHUNK_SIZE == 0 || CHUNK_SIZE % 8 != 0 {
+        if CHUNK_SIZE == 0 {
             return Err(ChunkAllocatorError::BadChunkSize);
         }
+
         let heap_is_empty = heap.len() == 0;
-        let is_not_multiple_of_chunk_size = heap.len() % CHUNK_SIZE != 0;
-        let is_not_coverable_by_bitmap = heap.len() < 8 * CHUNK_SIZE;
-        if heap_is_empty || is_not_multiple_of_chunk_size || is_not_coverable_by_bitmap {
+        let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
+
+        if heap_is_empty || !heap_is_multiple_of_chunk_size {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
         // check bitmap memory has correct length
         let chunk_count = heap.len() / CHUNK_SIZE;
-        let expected_bitmap_length = chunk_count / 8;
-        if bitmap.len() != expected_bitmap_length {
+
+        let chunk_count_is_multiple_of_8 = chunk_count % 8 == 0;
+        if !chunk_count_is_multiple_of_8 {
+            return Err(ChunkAllocatorError::BadHeapMemory);
+        }
+
+        let bitmap_covers_all_chunks_exact = chunk_count == bitmap.len() * 8;
+        if !bitmap_covers_all_chunks_exact {
             return Err(ChunkAllocatorError::BadBitmapMemory);
         }
 
@@ -107,6 +114,45 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             is_first_alloc: Cell::new(true),
             maybe_next_free_chunk: (0, chunk_count),
         })
+    }
+
+    /// Version of [`Self::new`] that panics instead of returning a result. Useful for globally
+    /// static versions of this type. The panic will happen during compile time and not during
+    /// run time. [`Self::new`] can't be used in such scenarious because `unwrap()` on the
+    /// Result  is not a const function.
+    #[inline]
+    pub const fn new_const(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
+        assert!(CHUNK_SIZE > 0, "chunk size must not be zero!");
+
+        let heap_is_empty = heap.len() == 0;
+        let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
+
+        assert!(
+            !heap_is_empty && heap_is_multiple_of_chunk_size,
+            "heap must be not empty and a multiple of the chunk size"
+        );
+
+        // check bitmap memory has correct length
+        let chunk_count = heap.len() / CHUNK_SIZE;
+
+        let chunk_count_is_multiple_of_8 = chunk_count % 8 == 0;
+        assert!(
+            chunk_count_is_multiple_of_8,
+            "chunk count must be a multiple of 8"
+        );
+
+        let bitmap_covers_all_chunks_exact = chunk_count == bitmap.len() * 8;
+        assert!(
+            bitmap_covers_all_chunks_exact,
+            "the bitmap must cover the amount of chunks exactly"
+        );
+
+        Self {
+            heap,
+            bitmap,
+            is_first_alloc: Cell::new(true),
+            maybe_next_free_chunk: (0, chunk_count),
+        }
     }
 
     /// Capacity in bytes of the allocator.
@@ -437,14 +483,28 @@ mod tests {
             ChunkAllocator::<0>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
             ChunkAllocatorError::BadChunkSize
         ));
+        /*std::panic::catch_unwind(|| {
+            let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
+            ChunkAllocator::<0>::new_const(&mut heap, &mut heap_bitmap);
+        }).expect_err("expected panic because of bad chunk size");
+
         assert!(matches!(
             ChunkAllocator::<1>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
-            ChunkAllocatorError::BadChunkSize
+            ChunkAllocatorError::BadHeapMemory
         ));
+        std::panic::catch_unwind(|| {
+            let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
+            ChunkAllocator::<1>::new_const(&mut heap, &mut heap_bitmap);
+        }).expect_err("expected panic because of bad heap memory");
+
         assert!(matches!(
-            ChunkAllocator::<9>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
-            ChunkAllocatorError::BadChunkSize
+            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut [0]).unwrap_err(),
+            ChunkAllocatorError::BadBitmapMemory
         ));
+        std::panic::catch_unwind(|| {
+            let (mut heap, _) = helpers::create_heap_and_bitmap_vectors();
+            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new_const(&mut heap, &mut [0]);
+        }).expect_err("expected panic because of bad bitmap memory");*/
     }
 
     /// Initializes the allocator with backing memory gained on the heap.

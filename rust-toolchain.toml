@@ -4,3 +4,4 @@
 [toolchain]
 channel = "nightly"
 # see https://rust-lang.github.io/rustup/concepts/components.html
+components = ["rustfmt", "rustc", "cargo", "rust-std", "rust-docs", "clippy" ]

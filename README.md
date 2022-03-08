@@ -85,16 +85,19 @@ This crate only builds with the nightly version. I developed it with version `1.
 
 ## Performance
 I executed my example `bench` in release mode on an Intel i7-1165G7 CPU and a heap of `160MB` to get the results listed
-below. I used `RUSTFLAGS="-C target-cpu=native" cargo run --release --example bench` to get maximum performance.
-The benchmark simulates a heavy usage of the heap in a single-threaded program with many random allocations and
-deallocations. The allocations vary in their alignment. The table below shows the results of this benchmark as number
-of clock cycles. Increasing the chunk size reduces the size of the bookkeeping bitmap which accelerates lookup.
-However, a smaller chunk size occupies less heap when only very small allocations are required.
+below. I used `RUSTFLAGS="-C target-cpu=native" cargo run --release --example bench` to excute the benchmark with
+maximum performance. The benchmark simulates a heavy usage of the heap in a single-threaded program with many random
+allocations and deallocations. The benchmark stops when the heap is at 100%. The allocations vary in their alignment.
+The table below shows the results of this benchmark as number of clock cycles.
 
-| Chunk Size    | # allocations | median | average | min | max   |
-|---------------|---------------|--------|---------|-----|-------|
-| 128           | 66960         | 858    | 884     | 129 | 46016 |
-| 256 [DEFAULT] | 68371         | 503    | 517     | 110 | 38047 |
-| 512           | 63154         | 355    | 366     | 102 | 40107 |
+| Chunk Size    | # Chunks | # allocations | # deallocations | median | average  | min | max   |
+|---------------|----------|---------------|-----------------|--------|----------|-----|-------|
+| 128           | 1310720  | 68148         | 47915           | 955    | 1001     | 126 | 57989 |
+| 256 [DEFAULT] | 655360   | 71842         | 51744           | 592    | 619      | 121 | 53578 |
+| 512           | 327680   | 66672         | 46858           | 373    | 401      | 111 | 54403 |
 
-The results vary slightly because each run gets influenced by some randomness.
+The results vary slightly because each run gets influenced by some randomness. One can see that the performance
+gets slower with a growing number of chunks. Increasing the chunk size reduces the size of the bookkeeping bitmap which
+accelerates the lookup. However, a smaller chunk size occupies less heap when only very small allocations are required.
+
+Note that performance is better than listed above when the heap is used less frequently and does not run full.

@@ -29,15 +29,18 @@ use simple_chunk_allocator::{ChunkAllocator, DEFAULT_CHUNK_SIZE};
 use std::alloc::{AllocError, Allocator, Layout};
 use std::ptr::NonNull;
 
-/// Benchmark that helps me to check how the search time for new blocks
-/// develops when the heap is getting full.
+/// Benchmark that helps me to check how the search time for new chunks
+/// gets influenced when the heap is getting full. The benchmark fills the heap
+/// until it is 100% full. During that process, it randomly allocates new memory
+/// with different alignments. Furthermore, it makes random deallocations of already
+/// allocated space to provoke fragmentation.
 ///
 /// Execute with `cargo run --release --example bench`. Or to get even better performance,
 /// execute it with `RUSTFLAGS="-C target-cpu=native" cargo run --example bench --release`
 ///
 fn main() {
-    // 16 MB
-    const HEAP_SIZE: usize = 0x1000000;
+    // 160 MiB
+    const HEAP_SIZE: usize = 0xa000000;
     const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
     const CHUNK_COUNT: usize = HEAP_SIZE / CHUNK_SIZE;
     const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
@@ -51,11 +54,12 @@ fn main() {
     let now_fn = || unsafe { x86::time::rdtscp() };
 
     let mut all_allocations = Vec::new();
+    let mut all_deallocations = Vec::new();
     let mut all_alloc_measurements = Vec::new();
 
     let powers_of_two = [1, 2, 4, 8, 16, 32, 64, 128];
     let mut rng = rand::thread_rng();
-    while alloc.usage() < 99.9 {
+    while alloc.usage() < 100.0 {
         let alignment_i = rng.gen_range(0..powers_of_two.len());
         let size = rng.gen_range(64..16384);
         let layout = Layout::from_size_align(size, powers_of_two[alignment_i]).unwrap();
@@ -86,11 +90,12 @@ fn main() {
             .take(count_allocations_to_free)
             .for_each(|(layout, allocation)| unsafe {
                 // println!("dealloc: layout={:?}", layout);
+                all_deallocations.push((layout, allocation));
                 alloc.deallocate(allocation.as_non_null_ptr(), layout);
             });
 
         println!(
-            "usage={:5.2}%, ticks={:6}, success={:5}, layout={:?}",
+            "usage={:6.2}%, ticks={:8}, success={:5}, layout={:?}",
             alloc.usage(),
             ticks,
             alloc_res.is_ok(),
@@ -100,8 +105,14 @@ fn main() {
 
     all_alloc_measurements.sort_by(|x1, x2| x1.cmp(x2));
     println!(
-        "Stats: {:6} allocations, median={} ticks, average={} ticks, min={} ticks, max={} ticks",
+        "Stats: {:6} allocations, {:6} deallocations, chunk_size={}, #chunks={}",
         all_alloc_measurements.len(),
+        all_deallocations.len(),
+        alloc.chunk_size(),
+        alloc.chunk_count()
+    );
+    println!(
+        "        median={} ticks, average={} ticks, min={} ticks, max={} ticks",
         all_alloc_measurements[all_alloc_measurements.len() / 2],
         all_alloc_measurements.iter().sum::<u64>() / (all_alloc_measurements.len() as u64),
         all_alloc_measurements.iter().min().unwrap(),

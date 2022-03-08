@@ -432,9 +432,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
         self.chunks_in_use -= freed_chunks;
 
-        // This helps the next allocation to be faster. Currently, this prefers the smallest
-        // possible continuous region. This prevents fragmentation but assumes/hopes the next
-        // allocation only needs as few chunks as possible (like a single one).
+        // This helps the next allocation to be faster.
+        //   Currently, this prefers the smallest possible continuous region which prevents
+        //   fragmentation. It  assumes/hopes the next allocation only needs as few chunks as
+        //   possible (ideally a fitting one).
         if freed_chunks < self.maybe_next_free_chunk.1 {
             self.maybe_next_free_chunk = (index, freed_chunks);
         }

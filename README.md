@@ -42,7 +42,7 @@ to share my knowledge and findings with others in the hope that someone can lear
 ```rust
 #![feature(const_mut_refs)]
 #![feature(allocator_api)]
-#![feature(const_ptr_is_null)]
+
 use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
 
 // The macros help to get a correctly sized arrays types.

@@ -552,11 +552,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 mod tests {
     use super::*;
     use crate::allocator::tests::helpers::GlobalPageAlignedAlloc;
+    use crate::PageAligned;
     use std::alloc::{AllocError, Allocator, Global};
     use std::cmp::max;
     use std::ptr::NonNull;
     use std::vec::Vec;
-    use crate::PageAligned;
 
     mod helpers {
 

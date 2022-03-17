@@ -54,13 +54,22 @@ macro_rules! heap {
         $crate::PageAligned::new([0_u8; $chunk_amount * $chunk_size])
     };
     (chunks=$chunk_amount:literal) => {
-        heap!(chunks=$chunk_amount, chunksize=$crate::DEFAULT_CHUNK_SIZE)
+        heap!(
+            chunks = $chunk_amount,
+            chunksize = $crate::DEFAULT_CHUNK_SIZE
+        )
     };
     (chunks=$chunk_amount:path) => {
-        heap!(chunks=$chunk_amount, chunksize=$crate::DEFAULT_CHUNK_SIZE)
+        heap!(
+            chunks = $chunk_amount,
+            chunksize = $crate::DEFAULT_CHUNK_SIZE
+        )
     };
     () => {
-        heap!(chunks=$crate::DEFAULT_CHUNK_AMOUNT, chunksize=$crate::DEFAULT_CHUNK_SIZE)
+        heap!(
+            chunks = $crate::DEFAULT_CHUNK_AMOUNT,
+            chunksize = $crate::DEFAULT_CHUNK_SIZE
+        )
     };
 }
 
@@ -86,7 +95,7 @@ macro_rules! heap_bitmap {
         $crate::PageAligned::new([0_u8; $chunk_amount / 8])
     };
     () => {
-        heap_bitmap!(chunks=$crate::DEFAULT_CHUNK_AMOUNT)
+        heap_bitmap!(chunks = $crate::DEFAULT_CHUNK_AMOUNT)
     };
 }
 

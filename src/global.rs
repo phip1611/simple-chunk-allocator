@@ -64,6 +64,10 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
     ///
     /// It is recommended that the heap and the bitmap both start at page-aligned addresses for
     /// better performance and to enable a faster search for correctly aligned addresses.
+    ///
+    /// WARNING: During const initialization it is not possible to check the alignment of the
+    /// provided buffer. Please make sure that the data is at least aligned to the chunk_size.
+    /// The recommended alignment is page-alignment.
     #[inline]
     pub const fn new(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
         let inner_alloc = ChunkAllocator::<CHUNK_SIZE>::new_const(heap, bitmap);
@@ -71,7 +75,7 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
         Self(inner_alloc)
     }
 
-    /// Returns the usage of the allocator in percentage.
+    /// Wrapper around [`ChunkAllocator::usage`].
     #[inline]
     pub fn usage(&self) -> f32 {
         self.0.lock().usage()
@@ -132,6 +136,7 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PageAligned;
     use std::vec::Vec;
 
     /// Uses [`GlobalChunkAllocator`] against the Rust Allocator API to test
@@ -143,10 +148,12 @@ mod tests {
         const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
         const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
 
-        static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-        static mut BITMAP_MEM: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
+        static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
+        static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> = PageAligned::new([0; BITMAP_SIZE]);
         static ALLOCATOR: GlobalChunkAllocator =
-            GlobalChunkAllocator::new(unsafe { &mut HEAP_MEM }, unsafe { &mut BITMAP_MEM });
+            GlobalChunkAllocator::new(unsafe { HEAP_MEM.deref_mut_const() }, unsafe {
+                BITMAP_MEM.deref_mut_const()
+            });
 
         assert_eq!(0.0, ALLOCATOR.usage());
         let vec1 =

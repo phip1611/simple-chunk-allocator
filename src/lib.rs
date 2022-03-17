@@ -133,6 +133,7 @@ SOFTWARE.
 #[macro_use]
 mod macros;
 mod allocator;
+mod chunk_cache;
 mod compiler_hints;
 mod global;
 mod page_aligned;

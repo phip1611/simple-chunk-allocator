@@ -25,13 +25,12 @@ SOFTWARE.
 
 use crate::chunk_cache::ChunkCacheEntry;
 use crate::compiler_hints::UNLIKELY;
-use core::alloc::AllocError;
 use core::alloc::Layout;
 use core::cell::Cell;
 use core::ptr::NonNull;
 
 /// Possible errors of [`ChunkAllocator`].
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum ChunkAllocatorError {
     /// The backing memory for the heap must be
     /// - not empty
@@ -85,6 +84,12 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         CHUNK_SIZE
     }
 
+    /// Returns the minimum guaranteed alignment by the allocator per chunk.
+    /// A chunk will never be at an address like 0x13, i.e., unaligned.
+    pub const fn min_alignment(&self) -> usize {
+        CHUNK_SIZE
+    }
+
     /// Creates a new allocator object. Verifies that the provided memory has the correct properties.
     /// Zeroes the bitmap.
     ///
@@ -118,14 +123,19 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
-        // TODO the align_offset-method does not work in const contexts with Rust nightly 1.61.
-        //  It always returns usize::max()
-        //  https://github.com/rust-lang/rust/issues/90962#issuecomment-1063924420
-        //
-        /*// check if the heap has at least an alignment of the chunk size
-        if heap.as_ptr().align_offset(CHUNK_SIZE) != 0 {
-            return Err(ChunkAllocatorError::BadHeapMemory);
-        }*/
+        // Warning: This is bleeding Edge Rust Compiler magic and may change in the future
+        // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
+        let offset = heap.as_ptr().align_offset(CHUNK_SIZE);
+        // With Rust 1.61 nightly align_offset always returns usize::MAX in const contexts
+        // because there is nothing else it could return in that case. There are no addresses
+        // at this point.
+        let is_in_const_context = offset == usize::MAX;
+        if !is_in_const_context {
+            assert!(
+                offset == 0,
+                "the heap must be at least aligned to CHUNK_SIZE"
+            );
+        }
 
         // check bitmap memory has correct length
         let chunk_count = heap.len() / CHUNK_SIZE;
@@ -175,14 +185,16 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             "heap must be not empty and a multiple of the chunk size"
         );
 
-        // TODO the align_offset-method does not work in const contexts with Rust nightly 1.61.
-        //  It always returns usize::max()
-        //  https://github.com/rust-lang/rust/issues/90962#issuecomment-1063924420
-        //
-        /*assert!(
-            heap.as_ptr().align_offset(CHUNK_SIZE) == 0,
-            "the heap must be at least aligned to CHUNK_SIZE"
-        );*/
+        // Warning: This is bleeding Edge Rust Compiler magic and may change in the future
+        // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
+        let offset = heap.as_ptr().align_offset(CHUNK_SIZE);
+        let is_in_const_context = offset == usize::MAX;
+        if !is_in_const_context {
+            assert!(
+                offset == 0,
+                "the heap must be at least aligned to CHUNK_SIZE"
+            );
+        }
 
         // check bitmap memory has correct length
         let chunk_count = heap.len() / CHUNK_SIZE;
@@ -204,8 +216,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             heap,
             bitmap,
             is_first_alloc: Cell::new(true),
-            // CHUNK_SIZE is minimal alignment and enforced by the constructor.
-            maybe_next_free_chunk: ChunkCacheEntry::new(0, CHUNK_SIZE, chunk_count),
+            // I can't enforce CHUNK_SIZE is minimal alignment here because this does not work in
+            // const contexts: see https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
+            // Current workaround: Do it lazily on the first allocation.
+            maybe_next_free_chunk: ChunkCacheEntry::new(0, 1, chunk_count),
             chunks_in_use: 0,
         }
     }
@@ -394,12 +408,12 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// - checks heap memory (alignment etc) because this can't be done during const new
     ///   initialization
     /// - zeroes the bitmap
-    fn init(&mut self) {
+    fn init(&mut self) -> Result<(), ChunkAllocatorError> {
         self.is_first_alloc.replace(false);
         // Zero bitmap
         self.bitmap.fill(0);
 
-        if self.heap.as_ptr().align_offset(4096) != 0 {
+        if self.heap.as_ptr().align_offset(4096) != 0 && CHUNK_SIZE < 4096 {
             log::debug!(
                 "It is recommended to use the allocator with page-aligned(!) backing memory for the heap."
             );
@@ -407,19 +421,26 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         // this can't be done in const new constructor
         // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
-        if self.heap.as_ptr().align_offset(CHUNK_SIZE) != 0 {
-            panic!(
-                "The heap is not aligned to at least CHUNK_SIZE. Recommended alignment is 4096 (page-alignment)."
+        if self.heap.as_ptr().align_offset(self.min_alignment()) != 0 {
+            log::error!("The heap is not aligned to at least CHUNK_SIZE. Recommended alignment is 4096 (page-alignment).");
+            Err(ChunkAllocatorError::BadHeapMemory)
+        } else {
+            // Now update; we checked the minimum alignment
+            self.maybe_next_free_chunk = ChunkCacheEntry::new(
+                self.maybe_next_free_chunk.index(),
+                self.min_alignment(),
+                self.maybe_next_free_chunk.chunk_count(),
             );
+            Ok(())
         }
     }
 
     #[track_caller]
     #[inline]
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
-    pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+    pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, ChunkAllocatorError> {
         if UNLIKELY(self.is_first_alloc.get()) {
-            self.init();
+            self.init()?;
         }
 
         // zero sized types may trigger this; according to the Rust doc of the `Allocator`
@@ -442,7 +463,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
                 ((self.usage() * self.capacity() as f32) as u64)
             );
         }
-        let index = index.map_err(|_| AllocError)?;
+
+        // unwrap or return error
+        let index = index?;
 
         for i in index..index + required_chunks {
             self.mark_chunk_as_used(i);
@@ -670,13 +693,13 @@ mod tests {
         // must be a multiple of 8
         const CHUNK_COUNT: usize = 16;
         const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-        static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+        static mut HEAP: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
         const BITMAP_SIZE: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE / 8;
         static mut HEAP_BITMAP: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
 
         // check that it compiles
         let mut _alloc: ChunkAllocator =
-            unsafe { ChunkAllocator::new(&mut HEAP, &mut HEAP_BITMAP).unwrap() };
+            unsafe { ChunkAllocator::new(HEAP.deref_mut_const(), &mut HEAP_BITMAP).unwrap() };
     }
 
     /// Test looks if the allocator ensures that the required chunk count to manage the backing
@@ -712,7 +735,8 @@ mod tests {
         // - limit 128 chosen arbitrary
         for chunk_count in (0..128).filter(|chunk_count| *chunk_count % 8 != 0) {
             let heap_size: usize = chunk_count * DEFAULT_CHUNK_SIZE;
-            let mut heap = vec![0_u8; heap_size];
+            let mut heap = Vec::new_in(GlobalPageAlignedAlloc);
+            (0..heap_size).for_each(|_| heap.push(0));
             let bitmap_size_exact = if chunk_count % 8 == 0 {
                 chunk_count / 8
             } else {

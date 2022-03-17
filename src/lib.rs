@@ -85,6 +85,7 @@ SOFTWARE.
 //! ///               If no argument is provided it falls back to a default.
 //! static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 //!
+//! // please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
 //! #[global_allocator]
 //! static ALLOCATOR: GlobalChunkAllocator =
 //!     unsafe { GlobalChunkAllocator::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
@@ -129,6 +130,7 @@ SOFTWARE.
 #![feature(slice_ptr_get)]
 #![feature(const_ptr_is_null)]
 #![feature(core_intrinsics)]
+#![feature(const_align_offset)]
 
 #[macro_use]
 mod macros;

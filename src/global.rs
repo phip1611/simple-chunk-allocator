@@ -50,6 +50,7 @@ pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
 /// /// Backing storage for heap bookkeeping bitmap. (read+write) static memory in final executable.
 /// static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 ///
+/// // please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
 /// #[global_allocator]
 /// static ALLOCATOR: GlobalChunkAllocator =
 ///     unsafe { GlobalChunkAllocator::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
@@ -124,7 +125,10 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
     #[inline]
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        self.0 .0.lock().allocate(layout)
+        self.0 .0.lock().allocate(layout).map_err(|error| {
+            log::error!("ChunkAllocatorError: {:?}", error);
+            AllocError
+        })
     }
 
     #[inline]

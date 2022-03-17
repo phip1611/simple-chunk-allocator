@@ -38,7 +38,7 @@ This project originates from my [Diplom thesis project](https://github.com/phip1
 originally had lots of struggles to create this (my first ever allocator), I outsourced it for better testability and
 to share my knowledge and findings with others in the hope that someone can learn from it in any way.
 
-# Minimal Code Example
+## Minimal Code Example
 ```rust
 #![feature(const_mut_refs)]
 #![feature(allocator_api)]
@@ -83,8 +83,32 @@ fn main() {
 }
 ```
 
+## Another Code Example (Free Standing Linux Binary)
+This is an excerpt. The code can be found in the GitHub repository in `freestanding-linux-example`.
+```rust
+static mut HEAP: PageAligned<[u8; 256]> = heap!(chunks = 16, chunksize = 16);
+static mut HEAP_BITMAP: PageAligned<[u8; 2]> = heap_bitmap!(chunks = 16);
+
+// please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
+#[global_allocator]
+static ALLOCATOR: GlobalChunkAllocator<16> =
+    unsafe { GlobalChunkAllocator::<16>::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
+
+/// Referenced as entry by linker argument. Entry into the code.
+#[no_mangle]
+fn start() -> ! {
+    write!(StdoutWriter, "Hello :)\n").unwrap();
+    let mut vec = Vec::new();
+    (0..10).for_each(|x| vec.push(x));
+    write!(StdoutWriter, "vec: {:#?}\n", vec).unwrap();
+    exit();
+}
+```
+
 ## MSRV
-This crate only builds with the nightly version. I developed it with version `1.61.0-nightly` (2022-03-05).
+This crate only builds with the nightly version of Rust because it uses many nightly-only features. I developed it
+with version `1.61.0-nightly` (2022-03-05). Older nightly versions might work. So far there is no stable Rust
+compiler version that compiles this.
 
 ## Performance
 The default CHUNK_SIZE is 256 bytes. It is a tradeoff between performance and efficient memory usage.

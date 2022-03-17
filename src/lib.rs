@@ -62,7 +62,7 @@ SOFTWARE.
 //! to share my knowledge and findings with others in the hope that someone can learn from it in any way.
 //!
 //!
-//! # Minimal Code Example
+//! ## Minimal Code Example
 //!
 //! ```rust
 //! #![feature(const_mut_refs)]

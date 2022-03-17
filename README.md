@@ -87,6 +87,8 @@ fn main() {
 This crate only builds with the nightly version. I developed it with version `1.61.0-nightly` (2022-03-05).
 
 ## Performance
+The default CHUNK_SIZE is 256 bytes. It is a tradeoff between performance and efficient memory usage.
+
 I executed my example `bench` in release mode on an Intel i7-1165G7 CPU and a heap of `160MB` to get the results listed
 below. I used `RUSTFLAGS="-C target-cpu=native" cargo run --release --example bench` to excute the benchmark with
 maximum performance. The benchmark simulates a heavy usage of the heap in a single-threaded program with many random

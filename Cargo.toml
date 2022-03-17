@@ -6,7 +6,7 @@ binaries where you want to manage a heap of a few megabytes without complex feat
 management. Instead, this allocator gets a fixed/static memory region and allocates memory from there. This memory
 region can be contained inside the executable file that uses this allocator.
 """
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = [
     "Philipp Schuster <phip1611@gmail.com>"

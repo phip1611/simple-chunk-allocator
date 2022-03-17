@@ -49,7 +49,9 @@ pub enum ChunkAllocatorError {
     OutOfMemory,
 }
 
-/// Default chunk size used by [`ChunkAllocator`].
+/// Default chunk size used by [`ChunkAllocator`]. 256 Bytes is a trade-off between fast
+/// allocations and efficient memory usage. However, small allocations will take up at least
+/// this amount if bytes.
 pub const DEFAULT_CHUNK_SIZE: usize = 256;
 
 /// Low-level chunk allocator that operates on the provided backing memory. Allocates memory

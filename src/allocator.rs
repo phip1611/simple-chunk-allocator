@@ -23,24 +23,25 @@ SOFTWARE.
 */
 //! Module for [`ChunkAllocator`].
 
+use crate::chunk_cache::ChunkCacheEntry;
 use crate::compiler_hints::UNLIKELY;
-use core::alloc::AllocError;
 use core::alloc::Layout;
 use core::cell::Cell;
 use core::ptr::NonNull;
 
 /// Possible errors of [`ChunkAllocator`].
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum ChunkAllocatorError {
     /// The backing memory for the heap must be
     /// - not empty
     /// - an multiple of the used chunk size that is a multiple of 8, and
-    /// - not start at 0.
+    /// - not start at 0
+    /// - be aligned to the chunk size.
     BadHeapMemory,
     /// The number of bits in the backing memory for the heap bitmap
     /// must match the number of chunks in the heap.
     BadBitmapMemory,
-    /// The chunk size must be not 0.
+    /// The chunk size must be not 0 and a power of 2.
     BadChunkSize,
     /// The heap is either completely full or to fragmented to serve
     /// the request. Also, it may happen that the alignment can't get
@@ -65,15 +66,13 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     bitmap: &'a mut [u8],
     /// Helper to do some initial initialization on the first runtime invocation.
     is_first_alloc: Cell<bool>,
-    /// Contains the next free chunk, maybe. The first value of the pair probably contains the
-    /// next free chunk. This is always the case, if a allocation follows a deallocation. The
-    /// deallocation will store the just freed block in this property to accelerate the next
-    /// allocation. In case of allocations, the allocation algorithm may set the value to a free
-    /// chunk it finds during the search when this iteration doesn't occupy these chunks by itself.
+    /// Contains the next free continuous memory region with a minimum length of one chunk.
+    /// It might happen that this entry is invalid because the heap is full or the next chunk
+    /// after the previous allocation is already in use.
     ///
     /// This optimization mechanism prevents the need to iterate over all chunks everytime which
-    /// can take up to tens of thousands of CPU cycles in the worst case (full heap).
-    maybe_next_free_chunk: (usize, usize),
+    /// can take up to tens of thousands of CPU cycles in the worst case (fragmented heap).
+    maybe_next_free_chunk: ChunkCacheEntry,
     /// Counts the number of blocks in use.
     chunks_in_use: usize,
 }
@@ -85,15 +84,26 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         CHUNK_SIZE
     }
 
+    /// Returns the minimum guaranteed alignment by the allocator per chunk.
+    /// A chunk will never be at an address like 0x13, i.e., unaligned.
+    pub const fn min_alignment(&self) -> usize {
+        CHUNK_SIZE
+    }
+
     /// Creates a new allocator object. Verifies that the provided memory has the correct properties.
     /// Zeroes the bitmap.
     ///
     /// - heap length must be a multiple of `CHUNK_SIZE`
     /// - the heap must be not empty
     /// - the bitmap must match the number of chunks
+    /// - the heap must be at least aligned to CHUNK_SIZE.
     ///
     /// It is recommended that the heap and the bitmap both start at page-aligned addresses for
     /// better performance and to enable a faster search for correctly aligned addresses.
+    ///
+    /// WARNING: During const initialization it is not possible to check the alignment of the
+    /// provided buffer. Please make sure that the data is at least aligned to the chunk_size.
+    /// The recommended alignment is page-alignment.
     #[inline]
     pub const fn new(
         heap: &'a mut [u8],
@@ -102,12 +112,29 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         if CHUNK_SIZE == 0 {
             return Err(ChunkAllocatorError::BadChunkSize);
         }
+        if !CHUNK_SIZE.is_power_of_two() {
+            return Err(ChunkAllocatorError::BadChunkSize);
+        }
 
         let heap_starts_at_0 = heap.as_ptr().is_null();
         let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
 
         if heap.is_empty() || heap_starts_at_0 || !heap_is_multiple_of_chunk_size {
             return Err(ChunkAllocatorError::BadHeapMemory);
+        }
+
+        // Warning: This is bleeding Edge Rust Compiler magic and may change in the future
+        // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
+        let offset = heap.as_ptr().align_offset(CHUNK_SIZE);
+        // With Rust 1.61 nightly align_offset always returns usize::MAX in const contexts
+        // because there is nothing else it could return in that case. There are no addresses
+        // at this point.
+        let is_in_const_context = offset == usize::MAX;
+        if !is_in_const_context {
+            assert!(
+                offset == 0,
+                "the heap must be at least aligned to CHUNK_SIZE"
+            );
         }
 
         // check bitmap memory has correct length
@@ -128,18 +155,27 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             heap,
             bitmap,
             is_first_alloc: Cell::new(true),
-            maybe_next_free_chunk: (0, chunk_count),
+            // CHUNK_SIZE is minimal alignment and enforced by the constructor.
+            maybe_next_free_chunk: ChunkCacheEntry::new(0, CHUNK_SIZE, chunk_count),
             chunks_in_use: 0,
         })
     }
 
     /// Version of [`Self::new`] that panics instead of returning a result. Useful for globally
-    /// static versions of this type. The panic will happen during compile time and not during
-    /// run time. [`Self::new`] can't be used in such scenarious because `unwrap()` on the
-    /// Result  is not a const function.
+    /// static const contexts. The panic will happen during compile time and not during run time.
+    /// [`Self::new`] can't be used in such scenarios because `unwrap()` on the
+    /// Result is not a const function (yet).
+    ///
+    /// WARNING: During const initialization it is not possible to check the alignment of the
+    /// provided buffer. Please make sure that the data is at least aligned to the chunk_size.
+    /// The recommended alignment is page-alignment.
     #[inline]
     pub const fn new_const(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
         assert!(CHUNK_SIZE > 0, "chunk size must not be zero!");
+        assert!(
+            CHUNK_SIZE.is_power_of_two(),
+            "chunk size must be a power of two!"
+        );
 
         let heap_starts_at_0 = heap.as_ptr().is_null();
         let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
@@ -148,6 +184,17 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             !heap.is_empty() && !heap_starts_at_0 && heap_is_multiple_of_chunk_size,
             "heap must be not empty and a multiple of the chunk size"
         );
+
+        // Warning: This is bleeding Edge Rust Compiler magic and may change in the future
+        // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
+        let offset = heap.as_ptr().align_offset(CHUNK_SIZE);
+        let is_in_const_context = offset == usize::MAX;
+        if !is_in_const_context {
+            assert!(
+                offset == 0,
+                "the heap must be at least aligned to CHUNK_SIZE"
+            );
+        }
 
         // check bitmap memory has correct length
         let chunk_count = heap.len() / CHUNK_SIZE;
@@ -169,7 +216,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             heap,
             bitmap,
             is_first_alloc: Cell::new(true),
-            maybe_next_free_chunk: (0, chunk_count),
+            // I can't enforce CHUNK_SIZE is minimal alignment here because this does not work in
+            // const contexts: see https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
+            // Current workaround: Do it lazily on the first allocation.
+            maybe_next_free_chunk: ChunkCacheEntry::new(0, 1, chunk_count),
             chunks_in_use: 0,
         }
     }
@@ -188,7 +238,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         self.capacity() / CHUNK_SIZE
     }
 
-    /// Returns the current memory usage in percentage.
+    /// Returns the current memory usage in percentage rounded to two decimal places.
     #[inline]
     pub fn usage(&self) -> f32 {
         if self.chunks_in_use == 0 {
@@ -279,7 +329,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::OutOfMemory);
         }
 
-        let start_index = self.maybe_next_free_chunk.0;
+        // We hope that the index and its succeeding chunks stored in the cache fits the requested
+        // memory region.
+        let start_index = self.maybe_next_free_chunk.index();
 
         (start_index..(start_index + self.chunk_count()))
             // Cope with wrapping indices (i.e. index 0 follows 31).
@@ -352,14 +404,43 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
     }
 
+    /// Performs initialization steps on the first allocation.
+    /// - checks heap memory (alignment etc) because this can't be done during const new
+    ///   initialization
+    /// - zeroes the bitmap
+    fn init(&mut self) -> Result<(), ChunkAllocatorError> {
+        self.is_first_alloc.replace(false);
+        // Zero bitmap
+        self.bitmap.fill(0);
+
+        if self.heap.as_ptr().align_offset(4096) != 0 && CHUNK_SIZE < 4096 {
+            log::debug!(
+                "It is recommended to use the allocator with page-aligned(!) backing memory for the heap."
+            );
+        }
+
+        // this can't be done in const new constructor
+        // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
+        if self.heap.as_ptr().align_offset(self.min_alignment()) != 0 {
+            log::error!("The heap is not aligned to at least CHUNK_SIZE. Recommended alignment is 4096 (page-alignment).");
+            Err(ChunkAllocatorError::BadHeapMemory)
+        } else {
+            // Now update; we checked the minimum alignment
+            self.maybe_next_free_chunk = ChunkCacheEntry::new(
+                self.maybe_next_free_chunk.index(),
+                self.min_alignment(),
+                self.maybe_next_free_chunk.chunk_count(),
+            );
+            Ok(())
+        }
+    }
+
     #[track_caller]
     #[inline]
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
-    pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+    pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, ChunkAllocatorError> {
         if UNLIKELY(self.is_first_alloc.get()) {
-            self.is_first_alloc.replace(false);
-            // Zero bitmap
-            self.bitmap.fill(0);
+            self.init()?;
         }
 
         // zero sized types may trigger this; according to the Rust doc of the `Allocator`
@@ -382,7 +463,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
                 ((self.usage() * self.capacity() as f32) as u64)
             );
         }
-        let index = index.map_err(|_| AllocError)?;
+
+        // unwrap or return error
+        let index = index?;
 
         for i in index..index + required_chunks {
             self.mark_chunk_as_used(i);
@@ -393,8 +476,13 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         // For example, it could be that it was not used in this allocation.
         //
         // MAKE SURE THIS GETS CALLED AFTER USED CHUNKS ARE MARKED AS SUCH EARLIER.
-        if !self.chunk_is_free(self.maybe_next_free_chunk.0) {
-            self.maybe_next_free_chunk = ((index + 1) % self.chunk_count(), 1);
+        if !self.chunk_is_free(self.maybe_next_free_chunk.index()) {
+            // at next allocation: continue search at this index
+            let next_index = (index + 1) % self.chunk_count();
+            // - alignment of chunk_size is always guaranteed.
+            // - We do not know yet if the next entry is actually available. We just give the
+            //   algorithm an hint where to start for the next search.
+            self.maybe_next_free_chunk = ChunkCacheEntry::new(next_index, CHUNK_SIZE, 1);
         }
 
         let heap_ptr = unsafe { self.chunk_index_to_ptr(index) };
@@ -432,12 +520,28 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
         self.chunks_in_use -= freed_chunks;
 
-        // This helps the next allocation to be faster.
-        //   Currently, this prefers the smallest possible continuous region which prevents
-        //   fragmentation. It  assumes/hopes the next allocation only needs as few chunks as
-        //   possible (ideally a fitting one).
-        if freed_chunks < self.maybe_next_free_chunk.1 {
-            self.maybe_next_free_chunk = (index, freed_chunks);
+        // This helps the next allocation to be faster because we know that this block was just
+        // freed. This only works if the next allocation fits into the continuous region of memory.
+        //
+        // Currently, this prefers the smallest possible continuous region with the lowest
+        // possible alignment which prevents fragmentation at the cost of larger lookup times. It
+        // assumes/hopes the next allocation only needs as few chunks as possible
+        // (ideally a fitting one).
+        //
+        // Small alignments (1, 2, 4, 8) are common but 4096 (page-alignment) is rather rare.
+        // Therefore, it is okay to try to prevent small allocations in addresses with big
+        // alignment.
+
+        // 1) freed memory region smaller then cached?
+        if freed_chunks < self.maybe_next_free_chunk.chunk_count()
+            // 2) if same size: check alignment
+            || (freed_chunks == self.maybe_next_free_chunk.chunk_count()
+                // does the layout alignment is bigger than the minimum alignment
+                // and smaller than the one currently cached
+                && layout.align() > CHUNK_SIZE
+                && layout.align() < self.maybe_next_free_chunk.alignment())
+        {
+            self.maybe_next_free_chunk = ChunkCacheEntry::new(index, layout.align(), freed_chunks);
         }
     }
 }
@@ -445,10 +549,12 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::allocator::tests::helpers::GlobalPageAlignedAlloc;
     use std::alloc::{AllocError, Allocator, Global};
     use std::cmp::max;
     use std::ptr::NonNull;
     use std::vec::Vec;
+    use crate::PageAligned;
 
     mod helpers {
 
@@ -487,6 +593,11 @@ mod tests {
             let mut heap_bitmap = Vec::with_capacity_in(BITMAP_SIZE, GlobalPageAlignedAlloc);
             (0..heap_bitmap.capacity()).for_each(|_| heap_bitmap.push(0));
 
+            assert_eq!(
+                heap.as_ptr().align_offset(DEFAULT_CHUNK_SIZE),
+                0,
+                "heap must be at least allocated to CHUNK_SIZE"
+            );
             assert_eq!(heap.as_ptr().align_offset(4096), 0, "must be page aligned");
             assert_eq!(
                 heap_bitmap.as_ptr().align_offset(4096),
@@ -503,35 +614,67 @@ mod tests {
     fn test_new_fails_illegal_chunk_size() {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
 
-        assert!(matches!(
-            ChunkAllocator::<0>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
-            ChunkAllocatorError::BadChunkSize
-        ));
+        let msg = "expected panic because of bad chunk size (is 0 which is illegal)";
+        assert!(
+            matches!(
+                ChunkAllocator::<0>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
+                ChunkAllocatorError::BadChunkSize
+            ),
+            "{}",
+            msg
+        );
         std::panic::catch_unwind(|| {
             let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
             ChunkAllocator::<0>::new_const(&mut heap, &mut heap_bitmap);
         })
-        .expect_err("expected panic because of bad chunk size");
-
-        assert!(matches!(
-            ChunkAllocator::<3>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
-            ChunkAllocatorError::BadHeapMemory
-        ));
+        .expect_err(msg);
+        // ------------------------------------------------------------------------------------
+        let msg = "expected panic because of bad chunk size (is not a power of 2 which is illegal)";
+        assert!(
+            matches!(
+                ChunkAllocator::<3>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
+                ChunkAllocatorError::BadChunkSize
+            ),
+            "{}",
+            msg
+        );
         std::panic::catch_unwind(|| {
             let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
             ChunkAllocator::<3>::new_const(&mut heap, &mut heap_bitmap);
         })
-        .expect_err("expected panic because of bad heap memory");
+        .expect_err(msg);
 
-        assert!(matches!(
-            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut [0]).unwrap_err(),
-            ChunkAllocatorError::BadBitmapMemory
-        ));
+        // ------------------------------------------------------------------------------------
+        let msg = "expected panic because of bad bitmap memory: heap is not big enough for the number of chunks";
+        assert!(
+            matches!(
+                ChunkAllocator::<512>::new(&mut heap, &mut heap_bitmap).unwrap_err(),
+                ChunkAllocatorError::BadBitmapMemory
+            ),
+            "{}",
+            msg
+        );
+        std::panic::catch_unwind(|| {
+            let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
+            ChunkAllocator::<512>::new_const(&mut heap, &mut heap_bitmap);
+        })
+        .expect_err(msg);
+
+        // ------------------------------------------------------------------------------------
+        let msg = "expected panic because of bad bitmap memory";
+        assert!(
+            matches!(
+                ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut [0]).unwrap_err(),
+                ChunkAllocatorError::BadBitmapMemory
+            ),
+            "{}",
+            msg
+        );
         std::panic::catch_unwind(|| {
             let (mut heap, _) = helpers::create_heap_and_bitmap_vectors();
             ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new_const(&mut heap, &mut [0]);
         })
-        .expect_err("expected panic because of bad bitmap memory");
+        .expect_err(msg);
     }
 
     /// Initializes the allocator with backing memory gained on the heap.
@@ -551,13 +694,13 @@ mod tests {
         // must be a multiple of 8
         const CHUNK_COUNT: usize = 16;
         const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-        static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+        static mut HEAP: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
         const BITMAP_SIZE: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE / 8;
         static mut HEAP_BITMAP: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
 
         // check that it compiles
         let mut _alloc: ChunkAllocator =
-            unsafe { ChunkAllocator::new(&mut HEAP, &mut HEAP_BITMAP).unwrap() };
+            unsafe { ChunkAllocator::new(HEAP.deref_mut_const(), &mut HEAP_BITMAP).unwrap() };
     }
 
     /// Test looks if the allocator ensures that the required chunk count to manage the backing
@@ -571,7 +714,9 @@ mod tests {
         // - limit 128 chosen arbitrary
         for chunk_count in (min_chunk_count..128).step_by(8) {
             let heap_size: usize = chunk_count * DEFAULT_CHUNK_SIZE;
-            let mut heap = vec![0_u8; heap_size];
+            let mut heap = Vec::new_in(GlobalPageAlignedAlloc);
+            (0..heap_size).for_each(|_| heap.push(0));
+
             let bitmap_size_exact = if chunk_count % 8 == 0 {
                 chunk_count / 8
             } else {
@@ -579,11 +724,7 @@ mod tests {
             };
             let mut bitmap = vec![0_u8; bitmap_size_exact];
             let alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut bitmap).unwrap();
-            assert_eq!(
-                chunk_count,
-                alloc.chunk_count(),
-                "the allocator must get constructed successfully because the bitmap size matches the number of chunks"
-            );
+            assert_eq!(chunk_count, alloc.chunk_count(),);
         }
     }
 
@@ -595,7 +736,8 @@ mod tests {
         // - limit 128 chosen arbitrary
         for chunk_count in (0..128).filter(|chunk_count| *chunk_count % 8 != 0) {
             let heap_size: usize = chunk_count * DEFAULT_CHUNK_SIZE;
-            let mut heap = vec![0_u8; heap_size];
+            let mut heap = Vec::new_in(GlobalPageAlignedAlloc);
+            (0..heap_size).for_each(|_| heap.push(0));
             let bitmap_size_exact = if chunk_count % 8 == 0 {
                 chunk_count / 8
             } else {
@@ -675,10 +817,10 @@ mod tests {
             alloc.find_free_continuous_memory_region(1, 4096).unwrap()
         );
         alloc.mark_chunk_as_used(0);
-        alloc.maybe_next_free_chunk = (1, 1);
+        alloc.maybe_next_free_chunk = ChunkCacheEntry::new(1, DEFAULT_CHUNK_SIZE, 1);
 
         assert_eq!(1, alloc.find_free_continuous_memory_region(1, 1).unwrap());
-        alloc.maybe_next_free_chunk = (2, 1);
+        alloc.maybe_next_free_chunk = ChunkCacheEntry::new(2, DEFAULT_CHUNK_SIZE, 1);
         assert_eq!(
             // 16: 256*16 = 4096 => second page in heap mem that consists of two pages
             16,
@@ -686,7 +828,7 @@ mod tests {
         );
         alloc.mark_chunk_as_used(16);
         // makes sure the next search
-        alloc.maybe_next_free_chunk = (17, 1);
+        alloc.maybe_next_free_chunk = ChunkCacheEntry::new(17, DEFAULT_CHUNK_SIZE, 1);
 
         assert!(
             alloc.find_free_continuous_memory_region(1, 4096).is_err(),

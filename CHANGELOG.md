@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.5 (2022-03-17)
+- optimized "realloc" method if existing memory chunk(s)
+  allocation is already big enough
+
 ## v0.1.4 (2022-03-17)
 - improved API for macros: they now include named parameters (that are optional; defaults are used then)
   - `heap!(chunks=16, chunksize=256)`

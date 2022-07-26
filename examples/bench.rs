@@ -51,7 +51,7 @@ fn main() {
     let mut alloc =
         ChunkAllocator::<CHUNK_SIZE>::new(heap.as_mut_slice(), heap_bitmap.as_mut_slice()).unwrap();
 
-    let now_fn = || unsafe { x86::time::rdtscp() };
+    let now_fn = || unsafe { x86::time::rdtscp().0 };
 
     let mut all_allocations = Vec::new();
     let mut all_deallocations = Vec::new();

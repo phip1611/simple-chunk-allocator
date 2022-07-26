@@ -29,6 +29,19 @@ use core::alloc::Layout;
 use core::cell::Cell;
 use core::ptr::NonNull;
 
+/// Zero sized types may trigger this; according to the Rust doc of the `Allocator`
+/// trait this is intended. I work around this by changing the size to 1. This makes
+/// core simpler.
+macro_rules! normalize_layout {
+    ($layout:ident) => {
+        if UNLIKELY($layout.size() == 0) {
+            core::alloc::Layout::from_size_align(1, $layout.align()).unwrap()
+        } else {
+            $layout
+        }
+    };
+}
+
 /// Possible errors of [`ChunkAllocator`].
 #[derive(Debug, Copy, Clone)]
 pub enum ChunkAllocatorError {
@@ -60,6 +73,9 @@ pub const DEFAULT_CHUNK_SIZE: usize = 256;
 /// The default chunk size is [`DEFAULT_CHUNK_SIZE`]. A large chunk size has the negative impact
 /// that small allocations will consume at least one chunk. A small chunk size has the negative
 /// impact that the allocation may take slightly longer.
+///
+/// As this allocator may allocate more memory than required (because of the chunk size),
+/// realloc/grow operations are no-ops in certain cases.
 #[derive(Debug)]
 pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Backing memory for heap.
@@ -399,6 +415,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Calculates the number of required chunks to fulfill an allocation request.
     #[inline(always)]
     const fn calc_required_chunks(&self, size: usize) -> usize {
+        assert!(size > 0);
         if size % CHUNK_SIZE == 0 {
             size / CHUNK_SIZE
         } else {
@@ -437,21 +454,17 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
     }
 
+    /// Allocates memory according to the specific layout.
     #[track_caller]
     #[inline]
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, ChunkAllocatorError> {
+        log::trace!("called allocate");
         if UNLIKELY(self.is_first_alloc.get()) {
             self.init()?;
         }
 
-        // zero sized types may trigger this; according to the Rust doc of the `Allocator`
-        // trait this is intended. I work around this by changing the size to 1.
-        let layout = if UNLIKELY(layout.size() == 0) {
-            Layout::from_size_align(1, layout.align()).unwrap()
-        } else {
-            layout
-        };
+        let layout = normalize_layout!(layout);
 
         let required_chunks = self.calc_required_chunks(layout.size());
 
@@ -499,18 +512,15 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         ))
     }
 
+    /// Deallocates the given pointer.
+    ///
     /// # Safety
     /// Unsafe if memory gets de-allocated that is still in use.
     #[track_caller]
     #[inline]
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
-        // zero sized types may trigger this; according to the Rust doc of the `Allocator`
-        // trait this is intended. I work around this by changing the size to 1.
-        let layout = if UNLIKELY(layout.size() == 0) {
-            Layout::from_size_align(1, layout.align()).unwrap()
-        } else {
-            layout
-        };
+        log::trace!("called deallocate");
+        let layout = normalize_layout!(layout);
 
         let freed_chunks = self.calc_required_chunks(layout.size());
 
@@ -544,6 +554,55 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
                 && layout.align() < self.maybe_next_free_chunk.alignment())
         {
             self.maybe_next_free_chunk = ChunkCacheEntry::new(index, layout.align(), freed_chunks);
+        }
+    }
+
+    /// Reallocs the memory. This might be a cheap operation if the new size is still smaller or
+    /// equal to the chunk size. Otherwise, this falls back to the default implementation of the
+    /// Global allocator from Rust.
+    ///
+    /// # Safety
+    /// Unsafe if memory gets de-allocated that is still in use.
+    #[track_caller]
+    #[inline]
+    pub unsafe fn realloc(
+        &mut self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_size: usize,
+    ) -> Result<NonNull<[u8]>, ChunkAllocatorError> {
+        log::trace!("called realloc");
+
+        // zero sized types may trigger this; according to the Rust doc of the `Allocator`
+        // trait this is intended. I work around this by changing the size to 1.
+        let old_layout = normalize_layout!(old_layout);
+
+        let required_chunks = self.calc_required_chunks(old_layout.size());
+        let occupied_size = required_chunks * CHUNK_SIZE;
+
+        // fast return: reuse existing allocation as it is big enough
+        if new_size <= occupied_size {
+            log::trace!("realloc fast return possible!");
+            Ok(NonNull::slice_from_raw_parts(ptr, new_size))
+        } else {
+            log::trace!("realloc fast return NOT possible!");
+
+            // SAFETY: the caller must ensure that the `new_size` does not overflow.
+            // `layout.align()` comes from a `Layout` and is thus guaranteed to be valid.
+            let new_layout = Layout::from_size_align_unchecked(new_size, old_layout.align());
+            // SAFETY: the caller must ensure that `new_layout` is greater than zero.
+            let new_ptr = self.allocate(new_layout)?;
+
+            // SAFETY: the previously allocated block cannot overlap the newly allocated block.
+            // The safety contract for `dealloc` must be upheld by the caller.
+            core::ptr::copy_nonoverlapping(
+                ptr.as_ptr(),
+                new_ptr.as_mut_ptr(),
+                core::cmp::min(old_layout.size(), new_size),
+            );
+            self.deallocate(ptr, old_layout);
+
+            Ok(new_ptr)
         }
     }
 }

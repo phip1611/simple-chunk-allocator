@@ -180,15 +180,14 @@ mod tests {
     use std::time::Instant;
     use std::vec::Vec;
 
-    const CHUNK_COUNT: usize = 32;
-    const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-    const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-
     /// Uses [`GlobalChunkAllocator`] against the Rust Allocator API to test
     /// the underlying [`ChunkAllocator`]. This is like an "integration" test
     /// whereas the other tests in the other module are unit tests.
     #[test]
     fn test_allocator_with_allocator_api() {
+        const CHUNK_COUNT: usize = 8;
+        const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
+        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
         static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
         static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> = PageAligned::new([0; BITMAP_SIZE]);
         static ALLOCATOR: GlobalChunkAllocator =
@@ -228,6 +227,9 @@ mod tests {
     /// if the realloc optimization works and is used.
     #[test]
     fn test_allocator_fast_realloc_works() {
+        const CHUNK_COUNT: usize = 32;
+        const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
+        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
         static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
         static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> = PageAligned::new([0; BITMAP_SIZE]);
         static ALLOCATOR: GlobalChunkAllocator =
@@ -235,8 +237,11 @@ mod tests {
                 BITMAP_MEM.deref_mut_const()
             });
 
+        // I run the allocation N times to measure the duration of it. This way I can figure out
+        // if the shortcut was taken or not.
         const RUNS: usize = 10000;
 
+        // TEST WITH FAST REALLOC
         let begin = Instant::now();
         for _ in 0..RUNS {
             let mut vec = Vec::<u8, _>::new_in(ALLOCATOR.allocator_api_glue());
@@ -246,19 +251,24 @@ mod tests {
         }
         let avg_duration_with_fast_realloc = (Instant::now() - begin).as_secs_f64() / RUNS as f64;
 
+        // TEST WITHOUT FAST REALLOC
         let begin = Instant::now();
         for _ in 0..RUNS {
             let mut vec = Vec::<u8, _>::new_in(ALLOCATOR.allocator_api_glue());
-            for i in 0..((CHUNK_COUNT / 2) - 7) {
-                // realloc optimization can not be used; always requires one more chunk
-                vec.resize(i * DEFAULT_CHUNK_SIZE + 1, 42);
-            }
+            // realloc optimization can not be used; always requires one more chunk
+            vec.resize(DEFAULT_CHUNK_SIZE * 1 + 1, 42);
+            vec.resize(DEFAULT_CHUNK_SIZE * 2 + 1, 42);
+            vec.resize(DEFAULT_CHUNK_SIZE * 3 + 1, 42);
+            vec.resize(DEFAULT_CHUNK_SIZE * 4 + 1, 42);
+            vec.resize(DEFAULT_CHUNK_SIZE * 5 + 1, 42);
+            vec.resize(DEFAULT_CHUNK_SIZE * 6 + 1, 42);
+            vec.resize(DEFAULT_CHUNK_SIZE * 7 + 1, 42);
         }
         let avg_duration_without_fast_realloc =
             (Instant::now() - begin).as_secs_f64() / RUNS as f64;
 
-        // almost always 2.9 but 2.2 so that test is not flaky
-        const FASTER_FACTOR_THRESHOLD: f64 = 2.2;
+        // almost always 3.6 or so but I use 2.6 so that test is not flaky
+        const FASTER_FACTOR_THRESHOLD: f64 = 2.6;
         let faster_factor = avg_duration_without_fast_realloc / avg_duration_with_fast_realloc;
         dbg!(avg_duration_without_fast_realloc / avg_duration_with_fast_realloc);
         dbg!(

@@ -5,9 +5,9 @@ binaries where you want to manage a heap of a few megabytes without complex feat
 management. Instead, this allocator gets a fixed/static memory region and allocates memory from there. This memory
 region can be contained inside the executable file that uses this allocator. See examples down below.
 
-⚠ _There probably exist better solutions for large-scale applications that have better performance by using a
-more complex algorithm. However, this is good for simple `no_std` binaries and hopefully also for educational
-purposes. It helped me to understand a lot about allocators._ ⚠
+⚠ _Other allocators with different properties (for example better memory utilization but less
+performance) do exist. The README of the repository contains a section that discusses how this allocator
+relates to other existing allocators on <crates.io>._ ⚠
 
 ## TL;DR
 - ✅ `no_std` allocator with test coverage
@@ -116,8 +116,10 @@ The default CHUNK_SIZE is 256 bytes. It is a tradeoff between performance and ef
 I executed my example `bench` in release mode on an Intel i7-1165G7 CPU and a heap of `160MB` to get the results listed
 below. I used `RUSTFLAGS="-C target-cpu=native" cargo run --release --example bench` to excute the benchmark with
 maximum performance. The benchmark simulates a heavy usage of the heap in a single-threaded program with many random
-allocations and deallocations. The benchmark stops when the heap is at 100%. The allocations vary in their alignment.
+allocations and deallocations. The benchmark stops when the heap is close to 100%. The allocations vary in their alignment.
 The table below shows the results of this benchmark as number of clock cycles.
+
+*Info: Since I measured those values, I slightly changed the benchmark.*
 
 | Chunk Size    | # Chunks | # allocations | # deallocations | median | average  | min | max   |
 |---------------|----------|---------------|-----------------|--------|----------|-----|-------|
@@ -130,3 +132,55 @@ gets slower with a growing number of chunks. Increasing the chunk size reduces t
 accelerates the lookup. However, a smaller chunk size occupies less heap when only very small allocations are required.
 
 Note that performance is better than listed above when the heap is used less frequently and does not run full.
+
+## Differences to Other Allocators
+### linked-list-allocator
+The [linked-list-allocator](https://github.com/rust-osdev/linked-list-allocator) is the only other well-suited
+and maintained general-purpose no-std allocator I could find on crates.io.
+
+**Advantages of my chunk allocator:**
+- much faster median allocation time
+- much faster average allocation time [ONLY IF HEAP IS NOT CLOSE TO BEEING FULL]
+- optimized realloc in certain cases (almost a no-op in some situations)
+- uses relatively easy algorithm (but needs dedicated heap and book-keeping backing storage)
+
+**Advantages of *linked-list-allocator*:**
+- better memory utilization (less fragmentation)
+- better worst-case allocation time in most test runs
+- better average allocation time [ONLY IF HEAP IS CLOSE TO BEEING FULL]
+- only needs a single chunk of memory and manages the heap with the backing-memory itself
+
+**Benchmark Comparision**:
+I ran `$ cargo run --example bench --release` against both allocators and obtained the following results. The benchmark
+performs random allocations of different sizes and alignments and also deallocates some of the older allocations. Over
+time, the heap becomes full, which is why the number of successful allocations has a higher delta to the attempted
+allocations.
+
+Runtime: 1s (most time lot's of heap available)
+```
+RESULTS OF BENCHMARK: Chunk Allocator
+     53360 allocations,  16211 successful_allocations,  37149 deallocations
+    median=   878 ticks, average=  1037 ticks, min=   158 ticks, max= 7178941 ticks
+
+RESULTS OF BENCHMARK: Linked List Allocator
+     31627 allocations,   9374 successful_allocations,  22253 deallocations
+    median= 18582 ticks, average= 44524 ticks, min=    71 ticks, max=44126026 ticks
+```
+
+We see that as long as most allocations are done on a heap with lots of space available, the chunk
+allocator is faster in median and average performance.
+
+Runtime: 10s (most time heap almost full)
+```
+RESULTS OF BENCHMARK: Chunk Allocator
+     74909 allocations,  23753 successful_allocations,  51156 deallocations
+    median=   961 ticks, average=273362 ticks, min=   167 ticks, max=53330953 ticks
+
+RESULTS OF BENCHMARK: Linked List Allocator
+     81884 allocations,  24792 successful_allocations,  57092 deallocations
+    median=100196 ticks, average=179495 ticks, min=    69 ticks, max=43937820 ticks
+```
+
+We see that when the heap is almost full, the chunk allocator has a faster median performance
+but a worse worst-case allocation time. The linked list allocator performs better on average (but not on median)
+when it is close to beeing full.

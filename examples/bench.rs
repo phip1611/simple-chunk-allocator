@@ -25,9 +25,22 @@ SOFTWARE.
 #![feature(slice_ptr_get)]
 
 use rand::Rng;
-use simple_chunk_allocator::{ChunkAllocator, DEFAULT_CHUNK_SIZE};
-use std::alloc::{AllocError, Allocator, Layout};
-use std::ptr::NonNull;
+use simple_chunk_allocator::{GlobalChunkAllocator, DEFAULT_CHUNK_SIZE};
+use std::alloc::{Allocator, Layout};
+use std::time::Instant;
+
+/// This is already enough to fill the corresponding heaps.
+const BENCH_DURATION: f64 = 10.0;
+
+/// 160 MiB heap size.
+const HEAP_SIZE: usize = 0xa000000;
+/// Backing memory for heap management.
+static mut HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> = PageAlignedBytes([0; HEAP_SIZE]);
+
+/// ChunkAllocator specific stuff.
+const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
+const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
+static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> = PageAlignedBytes([0; BITMAP_SIZE]);
 
 /// Benchmark that helps me to check how the search time for new chunks
 /// gets influenced when the heap is getting full. The benchmark fills the heap
@@ -39,18 +52,26 @@ use std::ptr::NonNull;
 /// execute it with `RUSTFLAGS="-C target-cpu=native" cargo run --example bench --release`
 ///
 fn main() {
-    // 160 MiB
-    const HEAP_SIZE: usize = 0xa000000;
-    const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
-    const CHUNK_COUNT: usize = HEAP_SIZE / CHUNK_SIZE;
-    const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-    let mut heap = Vec::with_capacity_in(HEAP_SIZE, PageAlignedGlobalAlloc);
-    (0..heap.capacity()).for_each(|_| heap.push(0));
-    let mut heap_bitmap = Vec::with_capacity_in(BITMAP_SIZE, PageAlignedGlobalAlloc);
-    (0..heap_bitmap.capacity()).for_each(|_| heap_bitmap.push(0));
-    let mut alloc =
-        ChunkAllocator::<CHUNK_SIZE>::new(heap.as_mut_slice(), heap_bitmap.as_mut_slice()).unwrap();
+    let chunk_allocator = unsafe {
+        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(
+            HEAP_MEMORY.0.as_mut_slice(),
+            HEAP_BITMAP_MEMORY.0.as_mut_slice(),
+        )
+    };
 
+    let mut linked_list_allocator = unsafe {
+        linked_list_allocator::LockedHeap::new(HEAP_MEMORY.0.as_mut_ptr() as _, HEAP_SIZE)
+    };
+
+    let bench_res_1 = benchmark_allocator(&mut chunk_allocator.allocator_api_glue());
+    let bench_res_2 = benchmark_allocator(&mut linked_list_allocator);
+
+    print_bench_results("Chunk Allocator", &bench_res_1);
+    println!();
+    print_bench_results("Linked List Allocator", &bench_res_2);
+}
+
+fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
     let now_fn = || unsafe { x86::time::rdtscp().0 };
 
     let mut all_allocations = Vec::new();
@@ -59,14 +80,17 @@ fn main() {
 
     let powers_of_two = [1, 2, 4, 8, 16, 32, 64, 128];
     let mut rng = rand::thread_rng();
-    while alloc.usage() < 100.0 {
+
+    // run for 10s
+    let bench_begin_time = Instant::now();
+    while bench_begin_time.elapsed().as_secs_f64() <= BENCH_DURATION {
         let alignment_i = rng.gen_range(0..powers_of_two.len());
         let size = rng.gen_range(64..16384);
         let layout = Layout::from_size_align(size, powers_of_two[alignment_i]).unwrap();
-        let begin = now_fn();
+        let alloc_begin = now_fn();
         let alloc_res = alloc.allocate(layout);
-        let ticks = now_fn() - begin;
-        all_alloc_measurements.push(ticks);
+        let alloc_ticks = now_fn() - alloc_begin;
+        all_alloc_measurements.push(alloc_ticks);
         all_allocations.push(Some((layout, alloc_res)));
 
         // now free an arbitrary amount again to simulate intense heap usage
@@ -93,41 +117,51 @@ fn main() {
                 all_deallocations.push((layout, allocation));
                 alloc.deallocate(allocation.as_non_null_ptr(), layout);
             });
-
-        println!(
-            "usage={:6.2}%, ticks={:8}, success={:5}, layout={:?}",
-            alloc.usage(),
-            ticks,
-            alloc_res.is_ok(),
-            layout
-        );
     }
 
+    // sort
     all_alloc_measurements.sort_by(|x1, x2| x1.cmp(x2));
+
+    BenchRunResults {
+        allocation_attempts: all_allocations.len() as _,
+        successful_allocations: all_allocations
+            .iter()
+            .filter(|x| x.is_some())
+            .map(|x| x.as_ref().unwrap())
+            .map(|(_layout, res)| res.is_ok())
+            .count() as _,
+        deallocations: all_deallocations.len() as _,
+        allocation_measurements: all_alloc_measurements,
+    }
+}
+
+fn print_bench_results(bench_name: &str, res: &BenchRunResults) {
+    println!("RESULTS OF BENCHMARK: {bench_name}");
     println!(
-        "Stats: {:6} allocations, {:6} deallocations, chunk_size={}, #chunks={}",
-        all_alloc_measurements.len(),
-        all_deallocations.len(),
-        alloc.chunk_size(),
-        alloc.chunk_count()
+        "    {:6} allocations, {:6} successful_allocations, {:6} deallocations",
+        res.allocation_attempts, res.successful_allocations, res.deallocations
     );
     println!(
-        "        median={} ticks, average={} ticks, min={} ticks, max={} ticks",
-        all_alloc_measurements[all_alloc_measurements.len() / 2],
-        all_alloc_measurements.iter().sum::<u64>() / (all_alloc_measurements.len() as u64),
-        all_alloc_measurements.iter().min().unwrap(),
-        all_alloc_measurements.iter().max().unwrap(),
+        "    median={:6} ticks, average={:6} ticks, min={:6} ticks, max={:6} ticks",
+        res.allocation_measurements[res.allocation_measurements.len() / 2],
+        res.allocation_measurements.iter().sum::<u64>()
+            / (res.allocation_measurements.len() as u64),
+        res.allocation_measurements.iter().min().unwrap(),
+        res.allocation_measurements.iter().max().unwrap(),
     );
 }
 
-struct PageAlignedGlobalAlloc;
-
-unsafe impl Allocator for PageAlignedGlobalAlloc {
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        std::alloc::System.allocate(layout.align_to(4096).unwrap())
-    }
-
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        std::alloc::System.deallocate(ptr, layout)
-    }
+/// Result of a bench run.
+struct BenchRunResults {
+    /// Number of attempts of allocations.
+    allocation_attempts: u64,
+    /// Number of successful successful_allocations.
+    successful_allocations: u64,
+    /// Number of deallocations.
+    deallocations: u64,
+    /// Sorted vector of the amount of clock ticks per allocation.
+    allocation_measurements: Vec<u64>,
 }
+
+#[repr(align(4096))]
+struct PageAlignedBytes<const N: usize>([u8; N]);

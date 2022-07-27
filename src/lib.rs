@@ -28,9 +28,9 @@ SOFTWARE.
 //! management. Instead, this allocator gets a fixed/static memory region and allocates memory from there. This memory
 //! region can be contained inside the executable file that uses this allocator. See examples down below.
 //!
-//! ⚠ _There probably exist better solutions for large-scale applications that have better performance by using a
-//! more complex algorithm. However, this is good for simple `no_std` binaries and hopefully also for educational
-//! purposes. It helped me to understand a lot about allocators._ ⚠
+//! ⚠ _Other allocators with different properties (for example better memory utilization but less
+//! performance) do exist. The README of the repository contains a section that discusses how this allocator
+//! relates to other existing allocators on <crates.io>._ ⚠
 //!
 //! ## TL;DR
 //! - ✅ `no_std` allocator with test coverage

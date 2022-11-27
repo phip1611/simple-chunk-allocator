@@ -635,6 +635,10 @@ mod tests {
             }
 
             unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+                let alignment = max(layout.align(), 4096);
+                // unwrap should never fail, because layout.align() is already a power
+                // of 2, otherwise the value not exist here.
+                let layout = layout.align_to(alignment).unwrap();
                 Global.deallocate(ptr, layout)
             }
         }

@@ -134,9 +134,19 @@ accelerates the lookup. However, a smaller chunk size occupies less heap when on
 Note that performance is better than listed above when the heap is used less frequently and does not run full.
 
 ## Differences to Other Allocators
+### good_memory_allocator (galloc)
+**Update November 2022**: I recently found [this new project](https://github.com/MaderNoob/galloc)
+and, from a first glance, I recommend to use this crate instead of mine for production usage. It has
+impressive performance and heap utilization at the costs of more complicated code. The repository
+includes interesting performance numbers from galloc, simple-chunk-allocator (this crate), and
+linked-list-allocator.
+
 ### linked-list-allocator
-The [linked-list-allocator](https://github.com/rust-osdev/linked-list-allocator) is the only other well-suited
-and maintained general-purpose no-std allocator I could find on crates.io.
+**Update November 2022**: I wrote this paragraph before I found out about galloc. I left it
+unchanged.
+
+The [linked-list-allocator](https://github.com/rust-osdev/linked-list-allocator) is among the few
+other well-suited and maintained general-purpose no-std allocator I could find on crates.io.
 
 **Advantages of my chunk allocator:**
 - much faster median allocation time

@@ -33,7 +33,7 @@ lto = true
 [dependencies]
 libm = "0.2"
 log = "0.4"
-spin = "0.9"
+spin = "0.9.8"
 
 [dev-dependencies]
 simple_logger = "2.1"

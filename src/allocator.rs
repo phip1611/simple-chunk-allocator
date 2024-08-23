@@ -24,7 +24,6 @@ SOFTWARE.
 //! Module for [`ChunkAllocator`].
 
 use crate::chunk_cache::ChunkCacheEntry;
-use crate::compiler_hints::UNLIKELY;
 use core::alloc::Layout;
 use core::cell::Cell;
 use core::ptr::NonNull;
@@ -34,7 +33,7 @@ use core::ptr::NonNull;
 /// core simpler.
 macro_rules! normalize_layout {
     ($layout:ident) => {
-        if UNLIKELY($layout.size() == 0) {
+        if $layout.size() == 0 {
             core::alloc::Layout::from_size_align(1, $layout.align()).unwrap()
         } else {
             $layout
@@ -288,7 +287,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[inline(always)]
     fn mark_chunk_as_used(&mut self, chunk_index: usize) {
         debug_assert!(chunk_index < self.chunk_count());
-        if UNLIKELY(!self.chunk_is_free(chunk_index)) {
+        if !self.chunk_is_free(chunk_index) {
             panic!(
                 "tried to mark chunk {} as used but it is already used",
                 chunk_index
@@ -303,7 +302,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[inline(always)]
     fn mark_chunk_as_free(&mut self, chunk_index: usize) {
         debug_assert!(chunk_index < self.chunk_count());
-        if UNLIKELY(self.chunk_is_free(chunk_index)) {
+        if self.chunk_is_free(chunk_index) {
             panic!(
                 "tried to mark chunk {} as free but it is already free",
                 chunk_index
@@ -342,7 +341,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         chunk_num_request: usize,
         alignment: usize,
     ) -> Result<usize, ChunkAllocatorError> {
-        if UNLIKELY(chunk_num_request > self.chunk_count()) {
+        if chunk_num_request > self.chunk_count() {
             // out of memory
             return Err(ChunkAllocatorError::OutOfMemory);
         }
@@ -351,11 +350,13 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         // memory region.
         let start_index = self.maybe_next_free_chunk.index();
 
-        (start_index..(start_index + self.chunk_count()))
+        let chunk_count = self.chunk_count();
+
+        (start_index..(start_index + chunk_count))
             // Cope with wrapping indices (i.e. index 0 follows 31).
             // This will lead to scenarios where it iterates like: 4,5,6,7,0,1,2,3
             // (assuming there are 8 chunks).
-            .map(|index| index % self.chunk_count())
+            .map(|index| index % chunk_count)
             // It only makes sense to start the lookup at chunks that are available.
             .filter(|chunk_index| self.chunk_is_free(*chunk_index))
             // If the heap has 8 chunks and we need 4 but start the search at index 6, then we
@@ -364,11 +365,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
                 // example: index=0 + request=4 with count=4  => is okay
                 *chunk_index + chunk_num_request <= self.chunk_count()
             })
-            // ALIGNMENT CHECK BEGIN
-            .map(|chunk_index| (chunk_index, unsafe { self.chunk_index_to_ptr(chunk_index) }))
-            .filter(|(_, addr)| addr.align_offset(alignment) == 0)
-            .map(|(chunk_index, _)| chunk_index)
-            // ALIGNMENT CHECK END
+            // ALIGNMENT CHECK
+            .filter(|&chunk_index| {
+                let ptr = unsafe { self.chunk_index_to_ptr(chunk_index) };
+                ptr.align_offset(alignment) == 0
+            })
             //
             // Now look for the continuous region: are all succeeding chunks free?
             // This is safe because earlier I skipped chunk_indices that are too close to
@@ -389,12 +390,12 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
     /// Returns the pointer to the beginning of the chunk.
     #[inline(always)]
-    unsafe fn chunk_index_to_ptr(&self, chunk_index: usize) -> *mut u8 {
+    unsafe fn chunk_index_to_ptr(&mut self, chunk_index: usize) -> *mut u8 {
         debug_assert!(
             chunk_index < self.chunk_count(),
             "chunk_index out of range!"
         );
-        self.heap.as_ptr().add(chunk_index * CHUNK_SIZE) as *mut u8
+        self.heap.as_ptr().cast_mut().add(chunk_index * CHUNK_SIZE)
     }
 
     /// Returns the chunk index of the given pointer (which points to the beginning of a chunk).
@@ -460,7 +461,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<[u8]>, ChunkAllocatorError> {
         log::trace!("called allocate");
-        if UNLIKELY(self.is_first_alloc.get()) {
+        if self.is_first_alloc.get() {
             self.init()?;
         }
 
@@ -470,7 +471,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         let index = self.find_free_continuous_memory_region(required_chunks, layout.align());
 
-        if UNLIKELY(index.is_err()) {
+        if index.is_err() {
             log::warn!(
                 "Out of Memory. Can't fulfill the requested layout: {:?}. Current usage is: {}%/{}byte",
                 layout,
@@ -771,6 +772,7 @@ mod tests {
     /// Test looks if the allocator ensures that the required chunk count to manage the backing
     /// memory matches the size of the bitmap. Tests the method `chunk_count()`.
     #[test]
+    #[cfg_attr(miri, ignore)] // passes but is very slow in Miri
     fn test_chunk_count_matches_bitmap() {
         // At minimum there must be 8 chunks that get managed by a bitmap of a size of 1 byte.
         let min_chunk_count = 8;
@@ -796,6 +798,7 @@ mod tests {
     /// Test looks if the allocator ensures that the allocator can not get constructed, if the
     /// bitmap size does not match the chunks perfectly.
     #[test]
+    #[cfg_attr(miri, ignore)] // passes but is very slow in Miri
     fn test_alloc_new_fails_when_bitmap_doesnt_match() {
         // - skip every 8th element. Hence, the chunk count will not be a multiple of 8.
         // - limit 128 chosen arbitrary

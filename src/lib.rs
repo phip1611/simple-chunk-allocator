@@ -128,17 +128,14 @@ SOFTWARE.
 #![feature(allocator_api)]
 #![feature(const_mut_refs)]
 #![feature(const_for)]
-#![feature(nonnull_slice_from_raw_parts)]
 #![feature(slice_ptr_get)]
 #![feature(const_ptr_is_null)]
-#![feature(core_intrinsics)]
 #![feature(const_align_offset)]
 
 #[macro_use]
 mod macros;
 mod allocator;
 mod chunk_cache;
-mod compiler_hints;
 mod global;
 mod page_aligned;
 

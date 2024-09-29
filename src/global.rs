@@ -166,10 +166,11 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
             "change of alignment currenly not supported"
         );
         let mut this = self.0 .0.lock();
-        ChunkAllocator::realloc(&mut *this, ptr, old_layout, new_layout.size()).map_err(|err| {
-            log::error!("reallocerror: {err:?}");
-            AllocError
-        })
+        this.realloc(ptr, old_layout, new_layout.size())
+            .map_err(|err| {
+                log::error!("realloc error: {err:?}");
+                AllocError
+            })
     }
 }
 

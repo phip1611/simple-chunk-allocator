@@ -24,6 +24,7 @@ jobs:
           override: true
       - run: cargo build
       - run: cargo test
+      - run: cargo +nightly miri test
       - run: cargo run --release --example bench
       - run: cargo run --example minimal
 

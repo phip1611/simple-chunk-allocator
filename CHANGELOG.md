@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.6 (2024-09-29)
+I discourage the use of this library, please look for an alternative. Use it
+only as learning resource or so. The library contains a few cases that produce
+UB.
+
+There are better alternatives, such as <https://crates.io/crates/talc>.
+
+- Fixed one case of UB (but not the one of the realloc implementation)
+
 ## v0.1.5 (2022-03-17)
 - optimized "realloc" method if existing memory chunk(s)
   allocation is already big enough

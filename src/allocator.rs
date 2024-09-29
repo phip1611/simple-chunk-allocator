@@ -353,37 +353,49 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         let chunk_count = self.chunk_count();
 
         (start_index..(start_index + chunk_count))
-            // Cope with wrapping indices (i.e. index 0 follows 31).
-            // This will lead to scenarios where it iterates like: 4,5,6,7,0,1,2,3
-            // (assuming there are 8 chunks).
-            .map(|index| index % chunk_count)
-            // It only makes sense to start the lookup at chunks that are available.
-            .filter(|chunk_index| self.chunk_is_free(*chunk_index))
-            // If the heap has 8 chunks and we need 4 but start the search at index 6, then we
-            // don't have enough continuous chunks to fulfill the request. Thus, we skip those.
-            .filter(|chunk_index| {
-                // example: index=0 + request=4 with count=4  => is okay
-                *chunk_index + chunk_num_request <= self.chunk_count()
-            })
-            // ALIGNMENT CHECK
-            .filter(|&chunk_index| {
-                let ptr = unsafe { self.chunk_index_to_ptr(chunk_index) };
-                ptr.align_offset(alignment) == 0
-            })
-            //
-            // Now look for the continuous region: are all succeeding chunks free?
-            // This is safe because earlier I skipped chunk_indices that are too close to
-            // the end. Return the first result.
-            .find(|chunk_index| {
-                // +1: chunk at chunk_index itself is already free (we checked this earlier)
-                // inclusive
-                let from = chunk_index + 1;
-                // -1: indices start at 0
-                // exclusive
-                let to = from + chunk_num_request - 1;
+            .filter_map(|index| {
+                // Cope with wrapping indices (i.e. index 0 follows 31).
+                // This will lead to scenarios where it iterates like: 4,5,6,7,0,1,2,3
+                // (assuming there are 8 chunks).
+                let chunk_index = index % chunk_count;
 
-                (from..to).all(|index| self.chunk_is_free(index))
+                // It only makes sense to start the lookup at chunks that are available.
+                if !self.chunk_is_free(chunk_index) {
+                    return None;
+                }
+
+                // If the heap has 8 chunks and we need 4 but start the search at index 6, then we
+                // don't have enough continuous chunks to fulfill the request. Thus, we skip those.
+                if chunk_index + chunk_num_request > self.chunk_count() {
+                    return None;
+                }
+
+                // Does the heap address has the right alignment to fulfill the request?
+                let ptr = unsafe { self.chunk_index_to_ptr(chunk_index) };
+                if ptr.align_offset(alignment) != 0 {
+                    return None;
+                }
+
+                // Now look for the continuous region: are all succeeding chunks free?
+                // This is safe because earlier I skipped chunk_indices that are too close to
+                // the end. Return the first result.
+                let is_free_region = {
+                    // inclusive
+                    let from = chunk_index + 1;
+                    // -1: indices start at 0
+                    // exclusive
+                    let to = from + chunk_num_request - 1;
+
+                    (from..to).all(|index| self.chunk_is_free(index))
+                };
+
+                if !is_free_region {
+                    return None;
+                }
+
+                Some(chunk_index)
             })
+            .next()
             // OK or out of memory
             .ok_or(ChunkAllocatorError::OutOfMemory)
     }
@@ -395,7 +407,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             chunk_index < self.chunk_count(),
             "chunk_index out of range!"
         );
-        self.heap.as_ptr().cast_mut().add(chunk_index * CHUNK_SIZE)
+        self.heap.as_mut_ptr().add(chunk_index * CHUNK_SIZE)
     }
 
     /// Returns the chunk index of the given pointer (which points to the beginning of a chunk).
@@ -855,7 +867,7 @@ mod tests {
     fn test_chunk_index_to_ptr() {
         let (mut heap, mut heap_bitmap) = helpers::create_heap_and_bitmap_vectors();
         let heap_ptr = heap.as_ptr();
-        let alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
+        let mut alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
         unsafe {
             assert_eq!(heap_ptr, alloc.chunk_index_to_ptr(0));

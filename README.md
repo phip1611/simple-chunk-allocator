@@ -1,5 +1,14 @@
 # Simple Chunk Allocator
 
+**Disclaimer 2024-09-29:**
+
+I discourage the use of this library. Use it only as learning resource or so,
+but please refrain from using it. It contains a few cases that produce UB.
+
+There are better alternatives, such as https://crates.io/crates/talc.
+
+---
+
 A simple `no_std` allocator written in Rust that manages memory in fixed-size chunks/blocks. Useful for basic `no_std`
 binaries where you want to manage a heap of a few megabytes without complex features such as paging/page table
 management. Instead, this allocator gets a fixed/static memory region and allocates memory from there. This memory

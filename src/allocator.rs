@@ -133,10 +133,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::BadChunkSize);
         }
 
-        let heap_starts_at_0 = heap.as_ptr().is_null();
         let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
 
-        if heap.is_empty() || heap_starts_at_0 || !heap_is_multiple_of_chunk_size {
+        if heap.is_empty() || !heap_is_multiple_of_chunk_size {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
@@ -194,11 +193,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             "chunk size must be a power of two!"
         );
 
-        let heap_starts_at_0 = heap.as_ptr().is_null();
         let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
 
         assert!(
-            !heap.is_empty() && !heap_starts_at_0 && heap_is_multiple_of_chunk_size,
+            !heap.is_empty() && heap_is_multiple_of_chunk_size,
             "heap must be not empty and a multiple of the chunk size"
         );
 

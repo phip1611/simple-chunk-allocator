@@ -26,6 +26,7 @@ SOFTWARE.
 use crate::chunk_cache::ChunkCacheEntry;
 use core::alloc::Layout;
 use core::cell::Cell;
+use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 /// Zero sized types may trigger this; according to the Rust doc of the `Allocator`
@@ -78,9 +79,15 @@ pub const DEFAULT_CHUNK_SIZE: usize = 256;
 #[derive(Debug)]
 pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Backing memory for heap.
-    heap: &'a mut [u8],
+    heap: NonNull<u8>,
+    /// Length of `heap` in bytes.
+    heap_len: usize,
     /// Backing memory for bookkeeping.
-    bitmap: &'a mut [u8],
+    bitmap: NonNull<u8>,
+    /// Length of `bitmap` in bytes.
+    bitmap_len: usize,
+    /// Keeps the backing memory exclusively borrowed for the allocator lifetime.
+    backing_memory: PhantomData<&'a mut [u8]>,
     /// Helper to do some initial initialization on the first runtime invocation.
     is_first_alloc: Cell<bool>,
     /// Contains the next free continuous memory region with a minimum length of one chunk.
@@ -93,6 +100,10 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Counts the number of blocks in use.
     chunks_in_use: usize,
 }
+
+// The allocator exclusively owns the backing memory for `'a`; the raw pointers
+// are only used to avoid invalidating returned allocation pointers.
+unsafe impl<'a, const CHUNK_SIZE: usize> Send for ChunkAllocator<'a, CHUNK_SIZE> {}
 
 impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Returns the used chunk size.
@@ -156,9 +167,14 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::BadBitmapMemory);
         }
 
+        let heap_len = heap.len();
+        let bitmap_len = bitmap.len();
         Ok(Self {
-            heap,
-            bitmap,
+            heap: NonNull::new(heap.as_mut_ptr()).unwrap(),
+            heap_len,
+            bitmap: NonNull::new(bitmap.as_mut_ptr()).unwrap(),
+            bitmap_len,
+            backing_memory: PhantomData,
             is_first_alloc: Cell::new(true),
             // CHUNK_SIZE is minimal alignment and enforced by the constructor.
             maybe_next_free_chunk: ChunkCacheEntry::new(0, CHUNK_SIZE, chunk_count),
@@ -205,9 +221,14 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             "the bitmap must cover the amount of chunks exactly"
         );
 
+        let heap_len = heap.len();
+        let bitmap_len = bitmap.len();
         Self {
-            heap,
-            bitmap,
+            heap: NonNull::new(heap.as_mut_ptr()).unwrap(),
+            heap_len,
+            bitmap: NonNull::new(bitmap.as_mut_ptr()).unwrap(),
+            bitmap_len,
+            backing_memory: PhantomData,
             is_first_alloc: Cell::new(true),
             // I can't enforce CHUNK_SIZE is minimal alignment here because this does not work in
             // const contexts: see https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
@@ -229,7 +250,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// Capacity in bytes of the allocator.
     #[inline]
     pub const fn capacity(&self) -> usize {
-        self.heap.len()
+        self.heap_len
     }
 
     /// Returns number of chunks.
@@ -264,7 +285,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             self.chunk_count() - 1
         );
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
-        let relevant_bit = (self.bitmap[byte_i] >> bit) & 1;
+        let relevant_bit = unsafe { (*self.bitmap.as_ptr().add(byte_i) >> bit) & 1 };
         relevant_bit == 0
     }
 
@@ -280,7 +301,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
         // xor => keep all bits, except bitflip at relevant position
-        self.bitmap[byte_i] ^= 1 << bit;
+        unsafe { *self.bitmap.as_ptr().add(byte_i) ^= 1 << bit };
     }
 
     /// Marks a chunk as free, i.e. write a 0 into the bitmap at the right position.
@@ -295,8 +316,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
         // xor => keep all bits, except bitflip at relevant position
-        let updated_byte = self.bitmap[byte_i] ^ (1 << bit);
-        self.bitmap[byte_i] = updated_byte;
+        unsafe {
+            let byte = self.bitmap.as_ptr().add(byte_i);
+            *byte ^= 1 << bit;
+        }
     }
 
     /// Returns the indices into the bitmap array of a given chunk index.
@@ -392,14 +415,14 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             chunk_index < self.chunk_count(),
             "chunk_index out of range!"
         );
-        unsafe { self.heap.as_mut_ptr().add(chunk_index * CHUNK_SIZE) }
+        unsafe { self.heap.as_ptr().add(chunk_index * CHUNK_SIZE) }
     }
 
     /// Returns the chunk index of the given pointer (which points to the beginning of a chunk).
     #[inline(always)]
     unsafe fn ptr_to_chunk_index(&self, ptr: *const u8) -> usize {
-        let heap_begin_inclusive = self.heap.as_ptr();
-        let heap_end_exclusive = unsafe { self.heap.as_ptr().add(self.heap.len()) };
+        let heap_begin_inclusive = self.heap.as_ptr().cast_const();
+        let heap_end_exclusive = unsafe { self.heap.as_ptr().add(self.heap_len) };
         debug_assert!(
             heap_begin_inclusive <= ptr && ptr < heap_end_exclusive,
             "pointer {:?} is out of range {:?}..{:?} of the allocators backing storage",
@@ -428,7 +451,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     fn init(&mut self) -> Result<(), ChunkAllocatorError> {
         self.is_first_alloc.replace(false);
         // Zero bitmap
-        self.bitmap.fill(0);
+        unsafe { core::ptr::write_bytes(self.bitmap.as_ptr(), 0, self.bitmap_len) };
 
         if self.heap.as_ptr().align_offset(4096) != 0 && CHUNK_SIZE < 4096 {
             log::debug!(

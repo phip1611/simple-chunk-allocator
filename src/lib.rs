@@ -147,7 +147,6 @@ mod page_aligned;
 
 pub use allocator::*;
 pub use global::*;
-pub use macros::*;
 pub use page_aligned::PageAligned;
 
 #[cfg(test)]

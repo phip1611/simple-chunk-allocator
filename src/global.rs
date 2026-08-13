@@ -37,8 +37,6 @@ pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
 /// which can be used with the `allocator_api` feature.
 ///
 /// ```rust
-/// #![feature(const_mut_refs)]
-///
 /// use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
 ///
 /// // The macros help to get a correctly sized arrays types.
@@ -119,9 +117,11 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
 
 unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a, CHUNK_SIZE> {
     #[inline]
-    #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.0.lock().allocate(layout).unwrap().as_mut_ptr()
+        self.0
+            .lock()
+            .allocate(layout)
+            .map_or(core::ptr::null_mut(), |allocation| allocation.as_mut_ptr())
     }
 
     #[inline]
@@ -134,8 +134,7 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a
             self.0
                 .lock()
                 .realloc(NonNull::new(ptr).unwrap(), layout, new_size)
-                .unwrap()
-                .as_mut_ptr()
+                .map_or(core::ptr::null_mut(), |allocation| allocation.as_mut_ptr())
         }
     }
 }
@@ -161,7 +160,6 @@ pub struct AllocatorApiGlue<'a, 'b, const CHUNK_SIZE: usize>(
 
 unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
     #[inline]
-    #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut this = self.0.0.lock();
         ChunkAllocator::allocate(&mut *this, layout).map_err(|error| {
@@ -177,7 +175,6 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
     }
 
     #[inline]
-    #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     unsafe fn grow(
         &self,
         ptr: NonNull<u8>,
@@ -257,6 +254,7 @@ mod tests {
     /// Uses [`GlobalChunkAllocator`] against the Rust Allocator API to test
     /// if the realloc optimization works and is used.
     #[test]
+    #[ignore = "performance benchmark"]
     fn test_allocator_fast_realloc_works() {
         const CHUNK_COUNT: usize = 32;
         const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;

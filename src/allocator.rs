@@ -122,10 +122,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// provided buffer. Please make sure that the data is at least aligned to the chunk_size.
     /// The recommended alignment is page-alignment.
     #[inline]
-    pub const fn new(
-        heap: &'a mut [u8],
-        bitmap: &'a mut [u8],
-    ) -> Result<Self, ChunkAllocatorError> {
+    pub fn new(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Result<Self, ChunkAllocatorError> {
         if CHUNK_SIZE == 0 {
             return Err(ChunkAllocatorError::BadChunkSize);
         }
@@ -139,19 +136,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
-        // Warning: This is bleeding Edge Rust Compiler magic and may change in the future
-        // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
         let offset = heap.as_ptr().align_offset(CHUNK_SIZE);
-        // With Rust 1.61 nightly align_offset always returns usize::MAX in const contexts
-        // because there is nothing else it could return in that case. There are no addresses
-        // at this point.
-        let is_in_const_context = offset == usize::MAX;
-        if !is_in_const_context {
-            assert!(
-                offset == 0,
-                "the heap must be at least aligned to CHUNK_SIZE"
-            );
-        }
+        assert!(
+            offset == 0,
+            "the heap must be at least aligned to CHUNK_SIZE"
+        );
 
         // check bitmap memory has correct length
         let chunk_count = heap.len() / CHUNK_SIZE;
@@ -200,17 +189,6 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             "heap must be not empty and a multiple of the chunk size"
         );
 
-        // Warning: This is bleeding Edge Rust Compiler magic and may change in the future
-        // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
-        let offset = heap.as_ptr().align_offset(CHUNK_SIZE);
-        let is_in_const_context = offset == usize::MAX;
-        if !is_in_const_context {
-            assert!(
-                offset == 0,
-                "the heap must be at least aligned to CHUNK_SIZE"
-            );
-        }
-
         // check bitmap memory has correct length
         let chunk_count = heap.len() / CHUNK_SIZE;
 
@@ -237,6 +215,15 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             maybe_next_free_chunk: ChunkCacheEntry::new(0, 1, chunk_count),
             chunks_in_use: 0,
         }
+    }
+
+    /// Creates an allocator from raw backing-memory slices in a const context.
+    ///
+    /// # Safety
+    /// The pointers must be valid, non-null, uniquely owned slices for the lifetime `'a`.
+    #[inline]
+    pub const unsafe fn new_raw(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
+        unsafe { Self::new_const(&mut *heap, &mut *bitmap) }
     }
 
     /// Capacity in bytes of the allocator.
@@ -405,14 +392,14 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             chunk_index < self.chunk_count(),
             "chunk_index out of range!"
         );
-        self.heap.as_mut_ptr().add(chunk_index * CHUNK_SIZE)
+        unsafe { self.heap.as_mut_ptr().add(chunk_index * CHUNK_SIZE) }
     }
 
     /// Returns the chunk index of the given pointer (which points to the beginning of a chunk).
     #[inline(always)]
     unsafe fn ptr_to_chunk_index(&self, ptr: *const u8) -> usize {
         let heap_begin_inclusive = self.heap.as_ptr();
-        let heap_end_exclusive = self.heap.as_ptr().add(self.heap.len());
+        let heap_end_exclusive = unsafe { self.heap.as_ptr().add(self.heap.len()) };
         debug_assert!(
             heap_begin_inclusive <= ptr && ptr < heap_end_exclusive,
             "pointer {:?} is out of range {:?}..{:?} of the allocators backing storage",
@@ -452,7 +439,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         // this can't be done in const new constructor
         // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
         if self.heap.as_ptr().align_offset(self.min_alignment()) != 0 {
-            log::error!("The heap is not aligned to at least CHUNK_SIZE. Recommended alignment is 4096 (page-alignment).");
+            log::error!(
+                "The heap is not aligned to at least CHUNK_SIZE. Recommended alignment is 4096 (page-alignment)."
+            );
             Err(ChunkAllocatorError::BadHeapMemory)
         } else {
             // Now update; we checked the minimum alignment
@@ -537,7 +526,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         log::trace!("dealloc: layout={:?}, #chunks={})", layout, freed_chunks);
 
-        let index = self.ptr_to_chunk_index(ptr.as_ptr());
+        let index = unsafe { self.ptr_to_chunk_index(ptr.as_ptr()) };
         for i in index..index + freed_chunks {
             self.mark_chunk_as_free(i);
         }
@@ -600,18 +589,21 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
             // SAFETY: the caller must ensure that the `new_size` does not overflow.
             // `layout.align()` comes from a `Layout` and is thus guaranteed to be valid.
-            let new_layout = Layout::from_size_align_unchecked(new_size, old_layout.align());
+            let new_layout =
+                unsafe { Layout::from_size_align_unchecked(new_size, old_layout.align()) };
             // SAFETY: the caller must ensure that `new_layout` is greater than zero.
             let new_ptr = self.allocate(new_layout)?;
 
             // SAFETY: the previously allocated block cannot overlap the newly allocated block.
             // The safety contract for `dealloc` must be upheld by the caller.
-            core::ptr::copy_nonoverlapping(
-                ptr.as_ptr(),
-                new_ptr.as_mut_ptr(),
-                core::cmp::min(old_layout.size(), new_size),
-            );
-            self.deallocate(ptr, old_layout);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    ptr.as_ptr(),
+                    new_ptr.as_mut_ptr(),
+                    core::cmp::min(old_layout.size(), new_size),
+                );
+                self.deallocate(ptr, old_layout);
+            }
 
             Ok(new_ptr)
         }
@@ -621,8 +613,8 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::allocator::tests::helpers::GlobalPageAlignedAlloc;
     use crate::PageAligned;
+    use crate::allocator::tests::helpers::GlobalPageAlignedAlloc;
     use std::alloc::{AllocError, Allocator, Global};
     use std::cmp::max;
     use std::ptr::NonNull;
@@ -650,7 +642,7 @@ mod tests {
                 // unwrap should never fail, because layout.align() is already a power
                 // of 2, otherwise the value not exist here.
                 let layout = layout.align_to(alignment).unwrap();
-                Global.deallocate(ptr, layout)
+                unsafe { Global.deallocate(ptr, layout) }
             }
         }
 
@@ -775,8 +767,18 @@ mod tests {
         static mut HEAP_BITMAP: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
 
         // check that it compiles
-        let mut _alloc: ChunkAllocator =
-            unsafe { ChunkAllocator::new(HEAP.deref_mut_const(), &mut HEAP_BITMAP).unwrap() };
+        let mut _alloc: ChunkAllocator = unsafe {
+            ChunkAllocator::new_raw(
+                core::ptr::slice_from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(HEAP).cast(),
+                    HEAP_SIZE,
+                ),
+                core::ptr::slice_from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(HEAP_BITMAP).cast(),
+                    BITMAP_SIZE,
+                ),
+            )
+        };
     }
 
     /// Test looks if the allocator ensures that the required chunk count to manage the backing
@@ -975,10 +977,9 @@ mod tests {
         alloc.mark_chunk_as_used(2);
         alloc.mark_chunk_as_used(16);
 
-        assert!(alloc.find_free_continuous_memory_region(
-            1,
-            4096).is_err(),
-                "out of memory! chunks 0 and 16 are occupied; the only available page-aligned addresses"
+        assert!(
+            alloc.find_free_continuous_memory_region(1, 4096).is_err(),
+            "out of memory! chunks 0 and 16 are occupied; the only available page-aligned addresses"
         );
         assert_eq!(17, alloc.find_free_continuous_memory_region(15, 1).unwrap(),);
     }

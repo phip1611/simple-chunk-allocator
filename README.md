@@ -74,7 +74,18 @@ static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 // please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
 #[global_allocator]
 static ALLOCATOR: GlobalChunkAllocator =
-    unsafe { GlobalChunkAllocator::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
+    unsafe {
+        GlobalChunkAllocator::new_raw(
+            core::ptr::slice_from_raw_parts_mut(
+                core::ptr::addr_of_mut!(HEAP).cast(),
+                1048576,
+            ),
+            core::ptr::slice_from_raw_parts_mut(
+                core::ptr::addr_of_mut!(HEAP_BITMAP).cast(),
+                512,
+            ),
+        )
+    };
 
 fn main() {
     // at this point, the allocator already got used a bit by the Rust runtime that executes
@@ -101,7 +112,18 @@ static mut HEAP_BITMAP: PageAligned<[u8; 2]> = heap_bitmap!(chunks = 16);
 // please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
 #[global_allocator]
 static ALLOCATOR: GlobalChunkAllocator<16> =
-    unsafe { GlobalChunkAllocator::<16>::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
+    unsafe {
+        GlobalChunkAllocator::<16>::new_raw(
+            core::ptr::slice_from_raw_parts_mut(
+                core::ptr::addr_of_mut!(HEAP).cast(),
+                256,
+            ),
+            core::ptr::slice_from_raw_parts_mut(
+                core::ptr::addr_of_mut!(HEAP_BITMAP).cast(),
+                2,
+            ),
+        )
+    };
 
 /// Referenced as entry by linker argument. Entry into the code.
 #[no_mangle]

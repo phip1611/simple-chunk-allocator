@@ -21,10 +21,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
-#![feature(const_mut_refs)]
 #![feature(allocator_api)]
 
-use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
+use simple_chunk_allocator::{GlobalChunkAllocator, PageAligned, heap, heap_bitmap};
 
 // The macros help to get a correctly sized arrays types.
 // I page-align them for better caching and to improve the availability of
@@ -45,8 +44,12 @@ static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 
 // please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
 #[global_allocator]
-static ALLOCATOR: GlobalChunkAllocator =
-    unsafe { GlobalChunkAllocator::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
+static ALLOCATOR: GlobalChunkAllocator = unsafe {
+    GlobalChunkAllocator::new_raw(
+        core::ptr::slice_from_raw_parts_mut(core::ptr::addr_of_mut!(HEAP).cast(), 1048576),
+        core::ptr::slice_from_raw_parts_mut(core::ptr::addr_of_mut!(HEAP_BITMAP).cast(), 512),
+    )
+};
 
 fn main() {
     // at this point, the allocator already got used a bit by the Rust runtime that executes

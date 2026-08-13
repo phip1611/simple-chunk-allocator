@@ -25,8 +25,9 @@ SOFTWARE.
 #![feature(slice_ptr_get)]
 
 use rand::Rng;
-use simple_chunk_allocator::{GlobalChunkAllocator, DEFAULT_CHUNK_SIZE};
-use std::alloc::{Allocator, Layout};
+use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
+use std::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+use std::ptr::NonNull;
 use std::time::Instant;
 
 /// This is already enough to fill the corresponding heaps.
@@ -36,11 +37,26 @@ const BENCH_DURATION: f64 = 10.0;
 const HEAP_SIZE: usize = 0xa000000;
 /// Backing memory for heap management.
 static mut HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> = PageAlignedBytes([0; HEAP_SIZE]);
+static mut LINKED_LIST_HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> = PageAlignedBytes([0; HEAP_SIZE]);
 
 /// ChunkAllocator specific stuff.
 const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
 const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
 static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> = PageAlignedBytes([0; BITMAP_SIZE]);
+
+struct GlobalAllocAdapter<A>(A);
+
+unsafe impl<A: GlobalAlloc> Allocator for GlobalAllocAdapter<A> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let ptr = unsafe { self.0.alloc(layout) };
+        let ptr = NonNull::new(ptr).ok_or(AllocError)?;
+        Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        unsafe { self.0.dealloc(ptr.as_ptr(), layout) }
+    }
+}
 
 /// Benchmark that helps me to check how the search time for new chunks
 /// gets influenced when the heap is getting full. The benchmark fills the heap
@@ -53,15 +69,25 @@ static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> = PageAlignedBytes(
 ///
 fn main() {
     let chunk_allocator = unsafe {
-        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(
-            HEAP_MEMORY.0.as_mut_slice(),
-            HEAP_BITMAP_MEMORY.0.as_mut_slice(),
+        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new_raw(
+            core::ptr::slice_from_raw_parts_mut(
+                core::ptr::addr_of_mut!(HEAP_MEMORY).cast(),
+                HEAP_SIZE,
+            ),
+            core::ptr::slice_from_raw_parts_mut(
+                core::ptr::addr_of_mut!(HEAP_BITMAP_MEMORY).cast(),
+                BITMAP_SIZE,
+            ),
         )
     };
 
-    let mut linked_list_allocator = unsafe {
-        linked_list_allocator::LockedHeap::new(HEAP_MEMORY.0.as_mut_ptr() as _, HEAP_SIZE)
+    let linked_list_allocator = unsafe {
+        linked_list_allocator::LockedHeap::new(
+            core::ptr::addr_of_mut!(LINKED_LIST_HEAP_MEMORY).cast(),
+            HEAP_SIZE,
+        )
     };
+    let mut linked_list_allocator = GlobalAllocAdapter(linked_list_allocator);
 
     let bench_res_1 = benchmark_allocator(&mut chunk_allocator.allocator_api_glue());
     let bench_res_2 = benchmark_allocator(&mut linked_list_allocator);

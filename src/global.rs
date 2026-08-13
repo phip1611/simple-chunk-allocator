@@ -60,7 +60,18 @@ pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
 /// // please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
 /// #[global_allocator]
 /// static ALLOCATOR: GlobalChunkAllocator =
-///     unsafe { GlobalChunkAllocator::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
+///     unsafe {
+///         GlobalChunkAllocator::new_raw(
+///             core::ptr::slice_from_raw_parts_mut(
+///                 core::ptr::addr_of_mut!(HEAP).cast(),
+///                 1048576,
+///             ),
+///             core::ptr::slice_from_raw_parts_mut(
+///                 core::ptr::addr_of_mut!(HEAP_BITMAP).cast(),
+///                 512,
+///             ),
+///         )
+///     };
 /// ```
 #[derive(Debug)]
 pub struct GlobalChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE>(
@@ -81,6 +92,16 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
         let inner_alloc = ChunkAllocator::<CHUNK_SIZE>::new_const(heap, bitmap);
         let inner_alloc = spin::Mutex::new(inner_alloc);
         Self(inner_alloc)
+    }
+
+    /// Creates a global allocator from raw backing-memory slices in a const context.
+    ///
+    /// # Safety
+    /// The pointers must be valid, non-null, uniquely owned slices for the lifetime `'a`.
+    #[inline]
+    pub const unsafe fn new_raw(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
+        let inner_alloc = unsafe { ChunkAllocator::<CHUNK_SIZE>::new_raw(heap, bitmap) };
+        Self(spin::Mutex::new(inner_alloc))
     }
 
     /// Wrapper around [`ChunkAllocator::usage`].
@@ -105,15 +126,17 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.0.lock().deallocate(NonNull::new(ptr).unwrap(), layout)
+        unsafe { self.0.lock().deallocate(NonNull::new(ptr).unwrap(), layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        self.0
-            .lock()
-            .realloc(NonNull::new(ptr).unwrap(), layout, new_size)
-            .unwrap()
-            .as_mut_ptr()
+        unsafe {
+            self.0
+                .lock()
+                .realloc(NonNull::new(ptr).unwrap(), layout, new_size)
+                .unwrap()
+                .as_mut_ptr()
+        }
     }
 }
 
@@ -140,7 +163,7 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
     #[inline]
     #[must_use = "The pointer must be used and freed eventually to prevent memory leaks."]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        let mut this = self.0 .0.lock();
+        let mut this = self.0.0.lock();
         ChunkAllocator::allocate(&mut *this, layout).map_err(|error| {
             log::error!("ChunkAllocatorError: {:?}", error);
             AllocError
@@ -149,8 +172,8 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
 
     #[inline]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        let mut this = self.0 .0.lock();
-        ChunkAllocator::deallocate(&mut *this, ptr, layout)
+        let mut this = self.0.0.lock();
+        unsafe { ChunkAllocator::deallocate(&mut *this, ptr, layout) }
     }
 
     #[inline]
@@ -165,12 +188,11 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
             old_layout.align() >= new_layout.align(),
             "change of alignment currenly not supported"
         );
-        let mut this = self.0 .0.lock();
-        this.realloc(ptr, old_layout, new_layout.size())
-            .map_err(|err| {
-                log::error!("realloc error: {err:?}");
-                AllocError
-            })
+        let mut this = self.0.0.lock();
+        unsafe { this.realloc(ptr, old_layout, new_layout.size()) }.map_err(|err| {
+            log::error!("realloc error: {err:?}");
+            AllocError
+        })
     }
 }
 
@@ -191,10 +213,18 @@ mod tests {
         const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
         static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
         static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> = PageAligned::new([0; BITMAP_SIZE]);
-        static ALLOCATOR: GlobalChunkAllocator =
-            GlobalChunkAllocator::new(unsafe { HEAP_MEM.deref_mut_const() }, unsafe {
-                BITMAP_MEM.deref_mut_const()
-            });
+        static ALLOCATOR: GlobalChunkAllocator = unsafe {
+            GlobalChunkAllocator::new_raw(
+                core::ptr::slice_from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
+                    HEAP_SIZE,
+                ),
+                core::ptr::slice_from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
+                    BITMAP_SIZE,
+                ),
+            )
+        };
 
         assert_eq!(0.0, ALLOCATOR.usage());
         let vec1 =
@@ -233,10 +263,18 @@ mod tests {
         const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
         static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
         static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> = PageAligned::new([0; BITMAP_SIZE]);
-        static ALLOCATOR: GlobalChunkAllocator =
-            GlobalChunkAllocator::new(unsafe { HEAP_MEM.deref_mut_const() }, unsafe {
-                BITMAP_MEM.deref_mut_const()
-            });
+        static ALLOCATOR: GlobalChunkAllocator = unsafe {
+            GlobalChunkAllocator::new_raw(
+                core::ptr::slice_from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
+                    HEAP_SIZE,
+                ),
+                core::ptr::slice_from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
+                    BITMAP_SIZE,
+                ),
+            )
+        };
 
         // I run the allocation N times to measure the duration of it. This way I can figure out
         // if the shortcut was taken or not.

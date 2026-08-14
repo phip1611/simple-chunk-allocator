@@ -1250,4 +1250,92 @@ mod tests {
         unsafe { allocator.deallocate(zero.cast(), zero_layout) };
         assert_eq!(allocator.usage(), 0.0);
     }
+
+    #[test]
+    fn test_deterministic_allocation_lifecycle() {
+        #[cfg(miri)]
+        const STEPS: usize = 64;
+        #[cfg(not(miri))]
+        const STEPS: usize = 512;
+        let (mut heap, mut bitmap) =
+            helpers::create_heap_and_bitmap_vectors_for::<256>(64);
+        let mut allocator =
+            ChunkAllocator::<256>::new(&mut heap, &mut bitmap).unwrap();
+        let mut seed = 0x5eed_u64;
+        let mut live: Vec<helpers::Allocation> = Vec::new();
+
+        for step in 0..STEPS {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let index = (seed as usize) % live.len().max(1);
+            match (seed >> 32) % 3 {
+                0 if !live.is_empty() => {
+                    let allocation = live.swap_remove(index);
+                    allocation.assert_pattern(allocation.layout.size());
+                    // SAFETY: the record retains the original live allocation
+                    // and layout.
+                    unsafe {
+                        allocator.deallocate(allocation.ptr, allocation.layout)
+                    };
+                }
+                1 if !live.is_empty() => {
+                    let mut allocation = live.swap_remove(index);
+                    allocation.assert_pattern(allocation.layout.size());
+                    let new_size = ((seed >> 8) as usize % 700) + 1;
+                    // SAFETY: the record retains the original live allocation
+                    // and layout.
+                    match unsafe {
+                        allocator.realloc(
+                            allocation.ptr,
+                            allocation.layout,
+                            new_size,
+                        )
+                    } {
+                        Ok(ptr) => {
+                            let preserved =
+                                allocation.layout.size().min(new_size);
+                            allocation.ptr = ptr.cast();
+                            allocation.layout = Layout::from_size_align(
+                                new_size,
+                                allocation.layout.align(),
+                            )
+                            .unwrap();
+                            allocation.assert_pattern(preserved);
+                            allocation.fill();
+                            live.push(allocation);
+                        }
+                        Err(ChunkAllocatorError::OutOfMemory) => {
+                            live.push(allocation)
+                        }
+                        Err(error) => {
+                            panic!("unexpected realloc error: {error:?}")
+                        }
+                    }
+                }
+                _ => {
+                    let size = ((seed >> 8) as usize % 700) + 1;
+                    let alignment =
+                        [1, 2, 4, 8, 16, 32, 64, 128, 256][(seed as usize) % 9];
+                    let layout =
+                        Layout::from_size_align(size, alignment).unwrap();
+                    if let Ok(ptr) = allocator.allocate(layout) {
+                        let allocation = helpers::Allocation {
+                            ptr: ptr.cast(),
+                            layout,
+                            pattern: step as u8,
+                        };
+                        allocation.fill();
+                        live.push(allocation);
+                    }
+                }
+            }
+        }
+
+        for allocation in live {
+            allocation.assert_pattern(allocation.layout.size());
+            // SAFETY: every remaining record is a live allocation with its
+            // layout.
+            unsafe { allocator.deallocate(allocation.ptr, allocation.layout) };
+        }
+        assert_eq!(allocator.usage(), 0.0);
+    }
 }

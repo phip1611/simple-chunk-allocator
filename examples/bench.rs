@@ -36,17 +36,21 @@ const BENCH_DURATION: f64 = 10.0;
 /// 160 MiB heap size.
 const HEAP_SIZE: usize = 0xa000000;
 /// Backing memory for heap management.
-static mut HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> = PageAlignedBytes([0; HEAP_SIZE]);
-static mut LINKED_LIST_HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> = PageAlignedBytes([0; HEAP_SIZE]);
+static mut HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> =
+    PageAlignedBytes([0; HEAP_SIZE]);
+static mut LINKED_LIST_HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> =
+    PageAlignedBytes([0; HEAP_SIZE]);
 
 /// ChunkAllocator specific stuff.
 const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
 const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> = PageAlignedBytes([0; BITMAP_SIZE]);
+static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> =
+    PageAlignedBytes([0; BITMAP_SIZE]);
 
 struct GlobalAllocAdapter<A>(A);
 
-// SAFETY: each method forwards the allocation contract to the wrapped allocator.
+// SAFETY: each method forwards the allocation contract to the wrapped
+// allocator.
 unsafe impl<A: GlobalAlloc> Allocator for GlobalAllocAdapter<A> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         // SAFETY: `GlobalAlloc::alloc` accepts every valid `Layout`.
@@ -64,12 +68,12 @@ unsafe impl<A: GlobalAlloc> Allocator for GlobalAllocAdapter<A> {
 /// Benchmark that helps me to check how the search time for new chunks
 /// gets influenced when the heap is getting full. The benchmark fills the heap
 /// until it is 100% full. During that process, it randomly allocates new memory
-/// with different alignments. Furthermore, it makes random deallocations of already
-/// allocated space to provoke fragmentation.
+/// with different alignments. Furthermore, it makes random deallocations of
+/// already allocated space to provoke fragmentation.
 ///
-/// Execute with `cargo run --release --example bench`. Or to get even better performance,
-/// execute it with `RUSTFLAGS="-C target-cpu=native" cargo run --example bench --release`
-///
+/// Execute with `cargo run --release --example bench`. Or to get even better
+/// performance, execute it with `RUSTFLAGS="-C target-cpu=native" cargo run
+/// --example bench --release`
 fn main() {
     // SAFETY: these statics are exclusively owned by `chunk_allocator`.
     let chunk_allocator = unsafe {
@@ -85,7 +89,8 @@ fn main() {
         )
     };
 
-    // SAFETY: this separate static is exclusively owned by the linked-list allocator.
+    // SAFETY: this separate static is exclusively owned by the linked-list
+    // allocator.
     let linked_list_allocator = unsafe {
         linked_list_allocator::LockedHeap::new(
             core::ptr::addr_of_mut!(LINKED_LIST_HEAP_MEMORY).cast(),
@@ -94,7 +99,8 @@ fn main() {
     };
     let mut linked_list_allocator = GlobalAllocAdapter(linked_list_allocator);
 
-    let bench_res_1 = benchmark_allocator(&mut chunk_allocator.allocator_api_glue());
+    let bench_res_1 =
+        benchmark_allocator(&mut chunk_allocator.allocator_api_glue());
     let bench_res_2 = benchmark_allocator(&mut linked_list_allocator);
 
     print_bench_results("Chunk Allocator", &bench_res_1);
@@ -118,7 +124,8 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
     while bench_begin_time.elapsed().as_secs_f64() <= BENCH_DURATION {
         let alignment_i = rng.gen_range(0..powers_of_two.len());
         let size = rng.gen_range(64..16384);
-        let layout = Layout::from_size_align(size, powers_of_two[alignment_i]).unwrap();
+        let layout =
+            Layout::from_size_align(size, powers_of_two[alignment_i]).unwrap();
         let alloc_begin = now_fn();
         let alloc_res = alloc.allocate(layout);
         let alloc_ticks = now_fn() - alloc_begin;
@@ -126,25 +133,30 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
         all_allocations.push(Some((layout, alloc_res)));
 
         // now free an arbitrary amount again to simulate intense heap usage
-        // Every ~10th iteration I free 7 existing allocations; the heap will slowly grow until it is full
+        // Every ~10th iteration I free 7 existing allocations; the heap will
+        // slowly grow until it is full
         let count_all_allocations_not_freed_yet =
             all_allocations.iter().filter(|x| x.is_some()).count();
-        let count_allocations_to_free =
-            if count_all_allocations_not_freed_yet > 10 && rng.gen_range(0..10) == 0 {
-                7
-            } else {
-                0
-            };
+        let count_allocations_to_free = if count_all_allocations_not_freed_yet
+            > 10
+            && rng.gen_range(0..10) == 0
+        {
+            7
+        } else {
+            0
+        };
 
         all_allocations
             .iter_mut()
             .filter(|x| x.is_some())
-            // .take() important; so that we don't allocate the same allocation multiple times ;)
+            // .take() important; so that we don't allocate the same allocation
+            // multiple times ;)
             .map(|x| x.take().unwrap())
             .filter(|(_, res)| res.is_ok())
             .map(|(layout, res)| (layout, res.unwrap()))
             .take(count_allocations_to_free)
-            // SAFETY: every retained allocation was returned by `alloc` with `layout`.
+            // SAFETY: every retained allocation was returned by `alloc` with
+            // `layout`.
             .for_each(|(layout, allocation)| unsafe {
                 // println!("dealloc: layout={:?}", layout);
                 all_deallocations.push((layout, allocation));
@@ -175,7 +187,8 @@ fn print_bench_results(bench_name: &str, res: &BenchRunResults) {
         res.allocation_attempts, res.successful_allocations, res.deallocations
     );
     println!(
-        "    median={:6} ticks, average={:6} ticks, min={:6} ticks, max={:6} ticks",
+        "    median={:6} ticks, average={:6} ticks, \
+         min={:6} ticks, max={:6} ticks",
         res.allocation_measurements[res.allocation_measurements.len() / 2],
         res.allocation_measurements.iter().sum::<u64>()
             / (res.allocation_measurements.len() as u64),

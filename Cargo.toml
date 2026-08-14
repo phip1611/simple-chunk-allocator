@@ -1,10 +1,8 @@
 [package]
 name = "simple-chunk-allocator"
 description = """
-A simple `no_std` allocator written in Rust that manages memory in fixed-size chunks/blocks. Useful for basic `no_std`
-binaries where you want to manage a heap of a few megabytes without complex features such as paging/page table
-management. Instead, this allocator gets a fixed/static memory region and allocates memory from there. This memory
-region can be contained inside the executable file that uses this allocator.
+A simple `no_std` allocator that manages fixed-size chunks. It is useful for
+basic `no_std` binaries with a fixed static heap, without paging or page tables.
 """
 version = "0.1.6"
 edition = "2024"
@@ -22,7 +20,8 @@ exclude = [
     ".github"
 ]
 
-# This affects at least the example build with this crate. I don't know if this affects the build of this
+# This affects at least the example build with this crate. I don't know if it
+# affects builds where this crate is a dependency.
 # crate when other crates use it as dependency. I don't think so.
 [profile.release]
 # https://doc.rust-lang.org/cargo/reference/profiles.html

@@ -344,65 +344,82 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::OutOfMemory);
         }
 
-        // We hope that the index and its succeeding chunks stored in the cache
-        // fits the requested memory region.
         let start_index = self.maybe_next_free_chunk.index();
-
         let chunk_count = self.chunk_count();
 
-        (start_index..(start_index + chunk_count))
-            .filter_map(|index| {
-                // Cope with wrapping indices (i.e. index 0 follows 31).
-                // This will lead to scenarios where it iterates like:
-                // 4,5,6,7,0,1,2,3 (assuming there are 8
-                // chunks).
-                let chunk_index = index % chunk_count;
+        self.find_free_region_in_range(
+            start_index,
+            chunk_count,
+            chunk_num_request,
+            alignment,
+        )
+        .or_else(|| {
+            self.find_free_region_in_range(
+                0,
+                start_index,
+                chunk_num_request,
+                alignment,
+            )
+        })
+        .ok_or(ChunkAllocatorError::OutOfMemory)
+    }
 
-                // It only makes sense to start the lookup at chunks that are
-                // available.
-                if !self.chunk_is_free(chunk_index) {
-                    return None;
-                }
+    /// Searches one non-wrapping chunk-index range for a suitable run.
+    #[inline(always)]
+    fn find_free_region_in_range(
+        &self,
+        start_index: usize,
+        end_index: usize,
+        chunk_num_request: usize,
+        alignment: usize,
+    ) -> Option<usize> {
+        let mut chunk_index =
+            self.next_aligned_chunk_index(start_index, alignment);
+        let alignment_stride = self.alignment_stride_in_chunks(alignment);
 
-                // If the heap has 8 chunks and we need 4 but start the search
-                // at index 6, then we don't have enough
-                // continuous chunks to fulfill the request. Thus, we skip
-                // those.
-                if chunk_index + chunk_num_request > self.chunk_count() {
-                    return None;
-                }
+        while chunk_index < end_index {
+            let run_end = chunk_index.checked_add(chunk_num_request)?;
+            if run_end <= self.chunk_count()
+                && (chunk_index..run_end).all(|index| self.chunk_is_free(index))
+            {
+                return Some(chunk_index);
+            }
+            chunk_index = chunk_index.saturating_add(alignment_stride);
+        }
+        None
+    }
 
-                // Does the heap address has the right alignment to fulfill the
-                // request? SAFETY: `chunk_index` is within the
-                // allocator's heap.
-                let ptr = unsafe { self.chunk_index_to_ptr(chunk_index) };
-                if ptr.align_offset(alignment) != 0 {
-                    return None;
-                }
+    /// Returns the number of chunks between aligned allocation starts.
+    #[inline(always)]
+    const fn alignment_stride_in_chunks(&self, alignment: usize) -> usize {
+        if alignment <= CHUNK_SIZE {
+            1
+        } else {
+            alignment / CHUNK_SIZE
+        }
+    }
 
-                // Now look for the continuous region: are all succeeding chunks
-                // free? This is safe because earlier I skipped
-                // chunk_indices that are too close to
-                // the end. Return the first result.
-                let is_free_region = {
-                    // inclusive
-                    let from = chunk_index + 1;
-                    // -1: indices start at 0
-                    // exclusive
-                    let to = from + chunk_num_request - 1;
+    /// Returns the first aligned chunk at or after `start_index`.
+    #[inline(always)]
+    fn next_aligned_chunk_index(
+        &self,
+        start_index: usize,
+        alignment: usize,
+    ) -> usize {
+        let stride = self.alignment_stride_in_chunks(alignment);
+        if stride == 1 {
+            return start_index;
+        }
 
-                    (from..to).all(|index| self.chunk_is_free(index))
-                };
+        let first_aligned_index =
+            self.heap.as_ptr().align_offset(alignment) / CHUNK_SIZE;
+        if start_index <= first_aligned_index {
+            return first_aligned_index;
+        }
 
-                if !is_free_region {
-                    return None;
-                }
-
-                Some(chunk_index)
-            })
-            .next()
-            // OK or out of memory
-            .ok_or(ChunkAllocatorError::OutOfMemory)
+        let distance = start_index - first_aligned_index;
+        let remainder = distance & (stride - 1);
+        start_index.saturating_add((stride - remainder) & (stride - 1))
     }
 
     /// Measures the free-region search without changing allocation state.
@@ -1207,6 +1224,25 @@ mod tests {
         assert_eq!(
             17,
             alloc.find_free_continuous_memory_region(15, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn test_find_free_region_honors_non_page_aligned_heap() {
+        let (mut heap, mut heap_bitmap) =
+            helpers::create_heap_and_bitmap_vectors();
+        let heap = &mut heap[DEFAULT_CHUNK_SIZE..DEFAULT_CHUNK_SIZE * 17];
+        let bitmap = &mut heap_bitmap[..2];
+        let mut alloc: ChunkAllocator =
+            ChunkAllocator::new(heap, bitmap).unwrap();
+
+        assert_eq!(
+            15,
+            alloc.find_free_continuous_memory_region(1, 4096).unwrap()
+        );
+        assert!(
+            alloc.find_free_continuous_memory_region(2, 4096).is_err(),
+            "the aligned start cannot fit two chunks before the heap end"
         );
     }
 

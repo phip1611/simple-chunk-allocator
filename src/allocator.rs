@@ -439,8 +439,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         index: usize,
         chunk_count: usize,
     ) {
-        assert!(index + chunk_count <= self.chunk_count());
-        for chunk_index in index..index + chunk_count {
+        let end = index.checked_add(chunk_count).expect("range overflow");
+        assert!(end <= self.chunk_count());
+        for chunk_index in index..end {
             self.mark_chunk_as_used(chunk_index);
         }
         self.chunks_in_use += chunk_count;
@@ -457,8 +458,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         index: usize,
         chunk_count: usize,
     ) {
-        assert!(index + chunk_count <= self.chunk_count());
-        for chunk_index in index..index + chunk_count {
+        let end = index.checked_add(chunk_count).expect("range overflow");
+        assert!(end <= self.chunk_count());
+        for chunk_index in index..end {
             self.mark_chunk_as_free(chunk_index);
         }
         self.chunks_in_use -= chunk_count;

@@ -24,7 +24,7 @@ SOFTWARE.
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
 
-use rand::Rng;
+use rand::RngExt;
 use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
 use std::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
 use std::ptr::NonNull;
@@ -117,13 +117,13 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
     let mut all_alloc_measurements = Vec::new();
 
     let powers_of_two = [1, 2, 4, 8, 16, 32, 64, 128];
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // run for 10s
     let bench_begin_time = Instant::now();
     while bench_begin_time.elapsed().as_secs_f64() <= BENCH_DURATION {
-        let alignment_i = rng.gen_range(0..powers_of_two.len());
-        let size = rng.gen_range(64..16384);
+        let alignment_i = rng.random_range(0..powers_of_two.len());
+        let size = rng.random_range(64..16384);
         let layout =
             Layout::from_size_align(size, powers_of_two[alignment_i]).unwrap();
         let alloc_begin = now_fn();
@@ -139,7 +139,7 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
             all_allocations.iter().filter(|x| x.is_some()).count();
         let count_allocations_to_free = if count_all_allocations_not_freed_yet
             > 10
-            && rng.gen_range(0..10) == 0
+            && rng.random_range(0..10) == 0
         {
             7
         } else {

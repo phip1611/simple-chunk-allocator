@@ -738,6 +738,80 @@ mod tests {
 
             (heap, heap_bitmap)
         }
+
+        pub fn create_heap_and_bitmap_vectors_for<const CHUNK_SIZE: usize>(
+            chunk_count: usize,
+        ) -> (
+            Vec<u8, GlobalPageAlignedAlloc>,
+            Vec<u8, GlobalPageAlignedAlloc>,
+        ) {
+            assert!(chunk_count.is_multiple_of(8));
+            let heap_size = CHUNK_SIZE * chunk_count;
+            let mut heap =
+                Vec::with_capacity_in(heap_size, GlobalPageAlignedAlloc);
+            heap.resize(heap_size, 0);
+            let mut bitmap =
+                Vec::with_capacity_in(chunk_count / 8, GlobalPageAlignedAlloc);
+            bitmap.resize(chunk_count / 8, 0);
+            assert_eq!(heap.as_ptr().align_offset(CHUNK_SIZE), 0);
+            (heap, bitmap)
+        }
+
+        /// A live allocation together with the layout it was created for and
+        /// a byte pattern that marks it.
+        ///
+        /// Giving each allocation its own pattern turns two allocations that
+        /// overlap in the heap into a failed assertion: the second [`fill`]
+        /// overwrites the first pattern, and the next [`assert_pattern`] of
+        /// the older allocation sees the foreign bytes.
+        ///
+        /// [`fill`]: Self::fill
+        /// [`assert_pattern`]: Self::assert_pattern
+        #[derive(Debug)]
+        pub struct Allocation {
+            pub ptr: NonNull<u8>,
+            pub layout: Layout,
+            pub pattern: u8,
+        }
+
+        impl Allocation {
+            /// Writes the pattern over the whole allocation.
+            pub fn fill(&self) {
+                // SAFETY: `ptr` names a live allocation of `layout.size()`
+                // bytes.
+                unsafe {
+                    core::ptr::write_bytes(
+                        self.ptr.as_ptr(),
+                        self.pattern,
+                        self.layout.size(),
+                    )
+                };
+            }
+
+            /// Asserts that the first `len` bytes still carry the pattern.
+            ///
+            /// `len` is a parameter because a caller may know the pattern for
+            /// fewer bytes than the allocation currently holds. After a
+            /// growing realloc, for example, only the bytes copied from the
+            /// old allocation carry it, while the rest is uninitialized and
+            /// must not be read.
+            pub fn assert_pattern(&self, len: usize) {
+                assert!(
+                    len <= self.layout.size(),
+                    "cannot check more bytes than the allocation holds"
+                );
+                // SAFETY: `len` is within the live allocation, and the bytes
+                // were initialized by `fill`.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(self.ptr.as_ptr(), len)
+                };
+                assert!(
+                    bytes.iter().all(|byte| *byte == self.pattern),
+                    "allocation lost its pattern {:#x}",
+                    self.pattern
+                );
+            }
+        }
     }
 
     /// Initializes the allocator with illegal chunk sizes.

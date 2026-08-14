@@ -398,19 +398,24 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         let start_index = self.maybe_next_free_chunk.index();
         let chunk_count = self.chunk_count();
+        let alignment_stride = self.alignment_stride_in_chunks(alignment);
+        let first_aligned_index =
+            self.first_aligned_chunk_index(alignment, alignment_stride);
 
         self.find_free_region_in_range(
             start_index,
             chunk_count,
             chunk_num_request,
-            alignment,
+            alignment_stride,
+            first_aligned_index,
         )
         .or_else(|| {
             self.find_free_region_in_range(
                 0,
                 start_index,
                 chunk_num_request,
-                alignment,
+                alignment_stride,
+                first_aligned_index,
             )
         })
         .ok_or(ChunkAllocatorError::OutOfMemory)
@@ -423,22 +428,73 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         start_index: usize,
         end_index: usize,
         chunk_num_request: usize,
-        alignment: usize,
+        alignment_stride: usize,
+        first_aligned_index: usize,
     ) -> Option<usize> {
-        let mut chunk_index =
-            self.next_aligned_chunk_index(start_index, alignment);
-        let alignment_stride = self.alignment_stride_in_chunks(alignment);
+        let mut chunk_index = Self::next_aligned_chunk_index(
+            start_index,
+            alignment_stride,
+            first_aligned_index,
+        );
 
         while chunk_index < end_index {
-            let run_end = chunk_index.checked_add(chunk_num_request)?;
-            if run_end <= self.chunk_count()
-                && (chunk_index..run_end).all(|index| self.chunk_is_free(index))
-            {
+            let Some(run_end) = chunk_index.checked_add(chunk_num_request)
+            else {
+                break;
+            };
+            if run_end > self.chunk_count() {
+                break;
+            }
+            let free_chunks =
+                self.free_chunk_run_length(chunk_index, chunk_num_request);
+            if free_chunks == chunk_num_request {
                 return Some(chunk_index);
             }
-            chunk_index = chunk_index.saturating_add(alignment_stride);
+            let next_free_index =
+                chunk_index.saturating_add(free_chunks.saturating_add(1));
+            chunk_index = if alignment_stride == 1 {
+                next_free_index
+            } else {
+                Self::next_aligned_chunk_index(
+                    next_free_index,
+                    alignment_stride,
+                    first_aligned_index,
+                )
+            };
         }
         None
+    }
+
+    /// Returns the free chunk count, capped at `maximum_length`.
+    #[inline(always)]
+    fn free_chunk_run_length(
+        &self,
+        start_index: usize,
+        maximum_length: usize,
+    ) -> usize {
+        let mut chunk_index = start_index;
+        let end_index = start_index
+            .saturating_add(maximum_length)
+            .min(self.chunk_count());
+
+        while chunk_index < end_index {
+            let byte_index = chunk_index / 8;
+            let bit_index = chunk_index % 8;
+            // SAFETY: callers bound the requested run to the bitmap capacity.
+            let bitmap_byte = unsafe { *self.bitmap.as_ptr().add(byte_index) };
+            let available_bits = 8 - bit_index;
+            let free_bits = (bitmap_byte >> bit_index)
+                .trailing_zeros()
+                .min(available_bits as u32)
+                as usize;
+            let free_bits = free_bits.min(end_index - chunk_index);
+            chunk_index += free_bits;
+            if free_bits < available_bits {
+                break;
+            }
+        }
+
+        chunk_index - start_index
     }
 
     /// Returns the number of chunks between aligned allocation starts.
@@ -451,20 +507,27 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
     }
 
+    /// Returns the first chunk index whose address can satisfy `alignment`.
+    #[inline(always)]
+    fn first_aligned_chunk_index(
+        &self,
+        alignment: usize,
+        stride: usize,
+    ) -> usize {
+        if stride == 1 {
+            0
+        } else {
+            self.heap.as_ptr().align_offset(alignment) / CHUNK_SIZE
+        }
+    }
+
     /// Returns the first aligned chunk at or after `start_index`.
     #[inline(always)]
-    fn next_aligned_chunk_index(
-        &self,
+    const fn next_aligned_chunk_index(
         start_index: usize,
-        alignment: usize,
+        stride: usize,
+        first_aligned_index: usize,
     ) -> usize {
-        let stride = self.alignment_stride_in_chunks(alignment);
-        if stride == 1 {
-            return start_index;
-        }
-
-        let first_aligned_index =
-            self.heap.as_ptr().align_offset(alignment) / CHUNK_SIZE;
         if start_index <= first_aligned_index {
             return first_aligned_index;
         }
@@ -1145,6 +1208,21 @@ mod tests {
         for index in 0..32 {
             assert!(alloc.chunk_is_free(index));
         }
+    }
+
+    #[test]
+    fn test_free_chunk_run_length_stops_at_occupied_chunk() {
+        let (mut heap, mut heap_bitmap) =
+            helpers::create_heap_and_bitmap_vectors();
+        let mut alloc: ChunkAllocator =
+            ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
+        alloc.mark_chunk_range_as_used(3, 2);
+        alloc.mark_chunk_range_as_used(10, 1);
+
+        assert_eq!(3, alloc.free_chunk_run_length(0, 32));
+        assert_eq!(5, alloc.free_chunk_run_length(5, 32));
+        assert_eq!(21, alloc.free_chunk_run_length(11, 32));
+        assert_eq!(2, alloc.free_chunk_run_length(11, 2));
     }
 
     /// Tests the `chunk_index_to_ptr` method.

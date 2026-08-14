@@ -738,6 +738,54 @@ mod tests {
 
             (heap, heap_bitmap)
         }
+
+        pub fn create_heap_and_bitmap_vectors_for<const CHUNK_SIZE: usize>(
+            chunk_count: usize,
+        ) -> (
+            Vec<u8, GlobalPageAlignedAlloc>,
+            Vec<u8, GlobalPageAlignedAlloc>,
+        ) {
+            assert!(chunk_count.is_multiple_of(8));
+            let heap_size = CHUNK_SIZE * chunk_count;
+            let mut heap =
+                Vec::with_capacity_in(heap_size, GlobalPageAlignedAlloc);
+            heap.resize(heap_size, 0);
+            let mut bitmap =
+                Vec::with_capacity_in(chunk_count / 8, GlobalPageAlignedAlloc);
+            bitmap.resize(chunk_count / 8, 0);
+            assert_eq!(heap.as_ptr().align_offset(CHUNK_SIZE), 0);
+            (heap, bitmap)
+        }
+
+        #[derive(Debug)]
+        pub struct Allocation {
+            pub ptr: NonNull<u8>,
+            pub layout: Layout,
+            pub pattern: u8,
+        }
+
+        impl Allocation {
+            pub fn fill(&self) {
+                // SAFETY: `ptr` names a live allocation of `layout.size()`
+                // bytes.
+                unsafe {
+                    core::ptr::write_bytes(
+                        self.ptr.as_ptr(),
+                        self.pattern,
+                        self.layout.size(),
+                    )
+                };
+            }
+
+            pub fn assert_pattern(&self, len: usize) {
+                // SAFETY: callers request no more than the live allocation
+                // length.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(self.ptr.as_ptr(), len)
+                };
+                assert!(bytes.iter().all(|byte| *byte == self.pattern));
+            }
+        }
     }
 
     /// Initializes the allocator with illegal chunk sizes.

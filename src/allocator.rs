@@ -1147,4 +1147,57 @@ mod tests {
             alloc.find_free_continuous_memory_region(15, 1).unwrap(),
         );
     }
+
+    #[test]
+    fn test_allocate_respects_boundaries_and_reuses_chunks() {
+        let (mut heap, mut bitmap) =
+            helpers::create_heap_and_bitmap_vectors_for::<256>(8);
+        let mut allocator =
+            ChunkAllocator::<256>::new(&mut heap, &mut bitmap).unwrap();
+        let layout = Layout::from_size_align(256, 1).unwrap();
+        let mut allocations = Vec::new();
+
+        for _ in 0..8 {
+            allocations.push(allocator.allocate(layout).unwrap());
+        }
+        assert!(matches!(
+            allocator.allocate(layout),
+            Err(ChunkAllocatorError::OutOfMemory)
+        ));
+        assert_eq!(allocator.usage(), 100.0);
+
+        let ptr = allocations.pop().unwrap().cast();
+        // SAFETY: `ptr` is the most recent live allocation for `layout`.
+        unsafe { allocator.deallocate(ptr, layout) };
+        assert!(allocator.allocate(layout).is_ok());
+    }
+
+    #[test]
+    fn test_allocate_honors_requested_alignment() {
+        let (mut heap, mut bitmap) =
+            helpers::create_heap_and_bitmap_vectors_for::<256>(64);
+        let mut allocator =
+            ChunkAllocator::<256>::new(&mut heap, &mut bitmap).unwrap();
+        let mut allocations = Vec::new();
+
+        for (index, alignment) in
+            [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+                .into_iter()
+                .enumerate()
+        {
+            let layout = Layout::from_size_align(1, alignment).unwrap();
+            let allocation = allocator.allocate(layout).unwrap();
+            assert_eq!(
+                allocation.as_ptr().cast::<u8>().align_offset(alignment),
+                0
+            );
+            allocations.push((allocation.cast(), layout, index));
+        }
+
+        for (ptr, layout, _) in allocations {
+            // SAFETY: each pointer is live and paired with its original layout.
+            unsafe { allocator.deallocate(ptr, layout) };
+        }
+        assert_eq!(allocator.usage(), 0.0);
+    }
 }

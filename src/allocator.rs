@@ -364,8 +364,6 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// available/free chunks. Returns the beginning index. Does not mark
     /// them as used. This is the responsibility of the caller.
     ///
-    /// Uses [`Self::find_next_free_aligned_chunk_by_index`] as helper method.
-    ///
     /// # Parameters
     /// - `chunk_num_request` number of chunks that must be all free without
     ///   gaps in-between; greater than 0

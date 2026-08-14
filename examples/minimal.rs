@@ -27,27 +27,11 @@ use simple_chunk_allocator::{
     GlobalChunkAllocator, PageAligned, heap, heap_bitmap,
 };
 
-// The macros help to get a correctly sized arrays types.
-// I page-align them for better caching and to improve the availability of
-// page-aligned addresses.
-
-/// Backing storage for heap (1Mib). (read+write) static memory in final
-/// executable.
-///
-/// heap!: first argument is chunk amount, second argument is size of each
-/// chunk.        If no arguments are provided it falls back to defaults.
-///        Example: `heap!(chunks=16, chunksize=256)`.
+/// Page-aligned heap storage.
 static mut HEAP: PageAligned<[u8; 1048576]> = heap!();
-/// Backing storage for heap bookkeeping bitmap. (read+write) static memory in
-/// final executable.
-///
-/// heap_bitmap!: first argument is amount of chunks.
-///               If no argument is provided it falls back to a default.
-///               Example: `heap_bitmap!(chunks=16)`.
+/// One bitmap bit per heap chunk.
 static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 
-// please make sure that the backing memory is at least CHUNK_SIZE aligned;
-// better page-aligned
 #[global_allocator]
 // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
 static ALLOCATOR: GlobalChunkAllocator = unsafe {
@@ -64,9 +48,6 @@ static ALLOCATOR: GlobalChunkAllocator = unsafe {
 };
 
 fn main() {
-    // at this point, the allocator already got used a bit by the Rust runtime
-    // that executes before main() gets called. This is not the case if a
-    // `no_std` binary gets produced.
     let old_usage = ALLOCATOR.usage();
 
     #[allow(clippy::vec_init_then_push)]
@@ -78,8 +59,6 @@ fn main() {
         assert!(ALLOCATOR.usage() > old_usage);
     }
 
-    // use "allocator_api"-feature. You can use this if "ALLOCATOR" is not
-    // registered as the global allocator. Otherwise, it is already the
-    // default.
+    // Use the allocator API explicitly when it is not globally registered.
     let _boxed = Box::new_in([1, 2, 3], ALLOCATOR.allocator_api_glue());
 }

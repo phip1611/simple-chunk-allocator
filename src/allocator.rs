@@ -42,41 +42,26 @@ macro_rules! normalize_layout {
     };
 }
 
-/// Possible errors of [`ChunkAllocator`].
+/// Errors returned when creating or allocating from a [`ChunkAllocator`].
 #[derive(Debug, Copy, Clone)]
 pub enum ChunkAllocatorError {
-    /// The backing memory for the heap must be
-    /// - not empty
-    /// - an multiple of the used chunk size that is a multiple of 8, and
-    /// - not start at 0
-    /// - be aligned to the chunk size.
+    /// The heap is empty, misaligned, or has an incompatible length.
     BadHeapMemory,
-    /// The number of bits in the backing memory for the heap bitmap
-    /// must match the number of chunks in the heap.
+    /// The bitmap does not contain exactly one bit per heap chunk.
     BadBitmapMemory,
-    /// The chunk size must be not 0 and a power of 2.
+    /// The chunk size is zero or not a power of two.
     BadChunkSize,
-    /// The heap is either completely full or to fragmented to serve
-    /// the request. Also, it may happen that the alignment can't get
-    /// guaranteed, because all aligned chunks are already in use.
+    /// No free, suitably aligned run of chunks can satisfy the request.
     OutOfMemory,
 }
 
-/// Default chunk size used by [`ChunkAllocator`]. 256 Bytes is a trade-off
-/// between fast allocations and efficient memory usage. However, small
-/// allocations will take up at least this amount if bytes.
+/// Default chunk size: 256 bytes.
 pub const DEFAULT_CHUNK_SIZE: usize = 256;
 
-/// Low-level chunk allocator that operates on the provided backing memory.
-/// Allocates memory with a variant of the strategies next-fit and best-fit.
+/// Allocates from caller-provided storage in fixed-size chunks.
 ///
-/// The default chunk size is [`DEFAULT_CHUNK_SIZE`]. A large chunk size has the
-/// negative impact that small allocations will consume at least one chunk. A
-/// small chunk size has the negative impact that the allocation may take
-/// slightly longer.
-///
-/// As this allocator may allocate more memory than required (because of the
-/// chunk size), realloc/grow operations are no-ops in certain cases.
+/// Each allocation consumes whole chunks. A larger chunk size reduces bitmap
+/// size and search work; a smaller size reduces internal fragmentation.
 #[derive(Debug)]
 pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Backing memory for heap.
@@ -125,22 +110,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         CHUNK_SIZE
     }
 
-    /// Creates a new allocator object. Verifies that the provided memory has
-    /// the correct properties. Zeroes the bitmap.
+    /// Creates an allocator and validates the backing storage.
     ///
-    /// - heap length must be a multiple of `CHUNK_SIZE`
-    /// - the heap must be not empty
-    /// - the bitmap must match the number of chunks
-    /// - the heap must be at least aligned to CHUNK_SIZE.
-    ///
-    /// It is recommended that the heap and the bitmap both start at
-    /// page-aligned addresses for better performance and to enable a faster
-    /// search for correctly aligned addresses.
-    ///
-    /// WARNING: During const initialization it is not possible to check the
-    /// alignment of the provided buffer. Please make sure that the data is
-    /// at least aligned to the chunk_size. The recommended alignment is
-    /// page-alignment.
+    /// The heap must be non-empty, `CHUNK_SIZE`-aligned, and contain a multiple
+    /// of eight chunks. The bitmap must have exactly one bit per chunk.
     #[inline]
     pub fn new(
         heap: &'a mut [u8],
@@ -196,16 +169,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         })
     }
 
-    /// Version of [`Self::new`] that panics instead of returning a result.
-    /// Useful for globally static const contexts. The panic will happen
-    /// during compile time and not during run time. [`Self::new`] can't be
-    /// used in such scenarios because `unwrap()` on the Result is not a
-    /// const function (yet).
+    /// Const variant of [`Self::new`] that panics for invalid sizes.
     ///
-    /// WARNING: During const initialization it is not possible to check the
-    /// alignment of the provided buffer. Please make sure that the data is
-    /// at least aligned to the chunk_size. The recommended alignment is
-    /// page-alignment.
+    /// Alignment is checked on the first allocation because it cannot be
+    /// checked during const evaluation.
     #[inline]
     pub const fn new_const(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
         assert!(CHUNK_SIZE > 0, "chunk size must not be zero!");
@@ -252,11 +219,13 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
     }
 
-    /// Creates an allocator from raw backing-memory slices in a const context.
+    /// Creates an allocator from raw backing-memory slices in const contexts.
     ///
     /// # Safety
-    /// The pointers must be valid, non-null, uniquely owned slices for the
-    /// lifetime `'a`.
+    /// `heap` and `bitmap` must be valid, non-null, non-overlapping mutable
+    /// slices for `'a`. The caller must give this allocator exclusive access to
+    /// both regions for `'a`. Their sizes and heap alignment must meet
+    /// [`Self::new`] requirements.
     #[inline]
     pub const unsafe fn new_raw(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
         // SAFETY: required validity and exclusivity are guaranteed by the
@@ -582,10 +551,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         ))
     }
 
-    /// Deallocates the given pointer.
+    /// Deallocates an allocation from this allocator.
     ///
     /// # Safety
-    /// Unsafe if memory gets de-allocated that is still in use.
+    /// `ptr` must be a live allocation returned by this allocator for `layout`.
+    /// It must be deallocated exactly once and not used afterwards.
     #[track_caller]
     #[inline]
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
@@ -631,12 +601,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
     }
 
-    /// Reallocs the memory. This might be a cheap operation if the new size is
-    /// still smaller or equal to the chunk size. Otherwise, this falls back
-    /// to the default implementation of the Global allocator from Rust.
+    /// Resizes an allocation from this allocator.
     ///
     /// # Safety
-    /// Unsafe if memory gets de-allocated that is still in use.
+    /// `ptr` must be a live allocation returned by this allocator for
+    /// `old_layout`. The caller must not use `ptr` after a successful move.
     #[track_caller]
     #[inline]
     pub unsafe fn realloc(

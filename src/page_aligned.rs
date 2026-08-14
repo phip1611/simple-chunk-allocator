@@ -26,24 +26,23 @@ SOFTWARE.
 use core::ops::Deref;
 use core::ops::DerefMut;
 
-/// Wrapper around a `T` that gets page-aligned.
-/// All important methods allow the usage in const contexts.
+/// Wraps `T` with 4096-byte alignment.
 #[derive(Debug)]
 #[repr(align(4096))]
 pub struct PageAligned<T>(T);
 
 impl<T> PageAligned<T> {
-    /// Constructor.
+    /// Wraps `t` with page alignment.
     pub const fn new(t: T) -> Self {
         Self(t)
     }
 
-    /// Like [`Deref::deref`] but const.
+    /// Returns the wrapped value in const contexts.
     pub const fn deref_const(&self) -> &T {
         &self.0
     }
 
-    /// Like [`DerefMut::deref_mut`] but const.
+    /// Returns the wrapped value mutably in const contexts.
     pub const fn deref_mut_const(&mut self) -> &mut T {
         &mut self.0
     }

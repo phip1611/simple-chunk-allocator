@@ -1,7 +1,7 @@
 /*
 MIT License
 
-Copyright (c) 2022 Philipp Schuster
+Copyright (c) 2026 Philipp Schuster
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,9 +24,10 @@ SOFTWARE.
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
 
-use rand::Rng;
-use simple_chunk_allocator::{GlobalChunkAllocator, DEFAULT_CHUNK_SIZE};
-use std::alloc::{Allocator, Layout};
+use rand::RngExt;
+use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
+use std::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+use std::ptr::NonNull;
 use std::time::Instant;
 
 /// This is already enough to fill the corresponding heaps.
@@ -35,35 +36,71 @@ const BENCH_DURATION: f64 = 10.0;
 /// 160 MiB heap size.
 const HEAP_SIZE: usize = 0xa000000;
 /// Backing memory for heap management.
-static mut HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> = PageAlignedBytes([0; HEAP_SIZE]);
+static mut HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> =
+    PageAlignedBytes([0; HEAP_SIZE]);
+static mut LINKED_LIST_HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> =
+    PageAlignedBytes([0; HEAP_SIZE]);
 
 /// ChunkAllocator specific stuff.
 const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
 const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> = PageAlignedBytes([0; BITMAP_SIZE]);
+static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> =
+    PageAlignedBytes([0; BITMAP_SIZE]);
+
+struct GlobalAllocAdapter<A>(A);
+
+// SAFETY: each method forwards the allocation contract to the wrapped
+// allocator.
+unsafe impl<A: GlobalAlloc> Allocator for GlobalAllocAdapter<A> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        // SAFETY: `GlobalAlloc::alloc` accepts every valid `Layout`.
+        let ptr = unsafe { self.0.alloc(layout) };
+        let ptr = NonNull::new(ptr).ok_or(AllocError)?;
+        Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: `Allocator::deallocate` requires this matching allocation.
+        unsafe { self.0.dealloc(ptr.as_ptr(), layout) }
+    }
+}
 
 /// Benchmark that helps me to check how the search time for new chunks
 /// gets influenced when the heap is getting full. The benchmark fills the heap
 /// until it is 100% full. During that process, it randomly allocates new memory
-/// with different alignments. Furthermore, it makes random deallocations of already
-/// allocated space to provoke fragmentation.
+/// with different alignments. Furthermore, it makes random deallocations of
+/// already allocated space to provoke fragmentation.
 ///
-/// Execute with `cargo run --release --example bench`. Or to get even better performance,
-/// execute it with `RUSTFLAGS="-C target-cpu=native" cargo run --example bench --release`
-///
+/// Execute with `cargo run --release --example bench`. Or to get even better
+/// performance, execute it with `RUSTFLAGS="-C target-cpu=native" cargo run
+/// --example bench --release`
 fn main() {
+    // SAFETY: these statics are exclusively owned by `chunk_allocator`.
     let chunk_allocator = unsafe {
-        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(
-            HEAP_MEMORY.0.as_mut_slice(),
-            HEAP_BITMAP_MEMORY.0.as_mut_slice(),
+        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new_raw(
+            core::ptr::slice_from_raw_parts_mut(
+                core::ptr::addr_of_mut!(HEAP_MEMORY).cast(),
+                HEAP_SIZE,
+            ),
+            core::ptr::slice_from_raw_parts_mut(
+                core::ptr::addr_of_mut!(HEAP_BITMAP_MEMORY).cast(),
+                BITMAP_SIZE,
+            ),
         )
     };
 
-    let mut linked_list_allocator = unsafe {
-        linked_list_allocator::LockedHeap::new(HEAP_MEMORY.0.as_mut_ptr() as _, HEAP_SIZE)
+    // SAFETY: this separate static is exclusively owned by the linked-list
+    // allocator.
+    let linked_list_allocator = unsafe {
+        linked_list_allocator::LockedHeap::new(
+            core::ptr::addr_of_mut!(LINKED_LIST_HEAP_MEMORY).cast(),
+            HEAP_SIZE,
+        )
     };
+    let mut linked_list_allocator = GlobalAllocAdapter(linked_list_allocator);
 
-    let bench_res_1 = benchmark_allocator(&mut chunk_allocator.allocator_api_glue());
+    let bench_res_1 =
+        benchmark_allocator(&mut chunk_allocator.allocator_api_glue());
     let bench_res_2 = benchmark_allocator(&mut linked_list_allocator);
 
     print_bench_results("Chunk Allocator", &bench_res_1);
@@ -72,6 +109,7 @@ fn main() {
 }
 
 fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
+    // SAFETY: `rdtscp` is available on the x86 target used by this benchmark.
     let now_fn = || unsafe { x86::time::rdtscp().0 };
 
     let mut all_allocations = Vec::new();
@@ -79,14 +117,15 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
     let mut all_alloc_measurements = Vec::new();
 
     let powers_of_two = [1, 2, 4, 8, 16, 32, 64, 128];
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // run for 10s
     let bench_begin_time = Instant::now();
     while bench_begin_time.elapsed().as_secs_f64() <= BENCH_DURATION {
-        let alignment_i = rng.gen_range(0..powers_of_two.len());
-        let size = rng.gen_range(64..16384);
-        let layout = Layout::from_size_align(size, powers_of_two[alignment_i]).unwrap();
+        let alignment_i = rng.random_range(0..powers_of_two.len());
+        let size = rng.random_range(64..16384);
+        let layout =
+            Layout::from_size_align(size, powers_of_two[alignment_i]).unwrap();
         let alloc_begin = now_fn();
         let alloc_res = alloc.allocate(layout);
         let alloc_ticks = now_fn() - alloc_begin;
@@ -94,24 +133,30 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
         all_allocations.push(Some((layout, alloc_res)));
 
         // now free an arbitrary amount again to simulate intense heap usage
-        // Every ~10th iteration I free 7 existing allocations; the heap will slowly grow until it is full
+        // Every ~10th iteration I free 7 existing allocations; the heap will
+        // slowly grow until it is full
         let count_all_allocations_not_freed_yet =
             all_allocations.iter().filter(|x| x.is_some()).count();
-        let count_allocations_to_free =
-            if count_all_allocations_not_freed_yet > 10 && rng.gen_range(0..10) == 0 {
-                7
-            } else {
-                0
-            };
+        let count_allocations_to_free = if count_all_allocations_not_freed_yet
+            > 10
+            && rng.random_range(0..10) == 0
+        {
+            7
+        } else {
+            0
+        };
 
         all_allocations
             .iter_mut()
             .filter(|x| x.is_some())
-            // .take() important; so that we don't allocate the same allocation multiple times ;)
+            // .take() important; so that we don't allocate the same allocation
+            // multiple times ;)
             .map(|x| x.take().unwrap())
             .filter(|(_, res)| res.is_ok())
             .map(|(layout, res)| (layout, res.unwrap()))
             .take(count_allocations_to_free)
+            // SAFETY: every retained allocation was returned by `alloc` with
+            // `layout`.
             .for_each(|(layout, allocation)| unsafe {
                 // println!("dealloc: layout={:?}", layout);
                 all_deallocations.push((layout, allocation));
@@ -120,15 +165,14 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
     }
 
     // sort
-    all_alloc_measurements.sort_by(|x1, x2| x1.cmp(x2));
+    all_alloc_measurements.sort_unstable();
 
     BenchRunResults {
         allocation_attempts: all_allocations.len() as _,
         successful_allocations: all_allocations
             .iter()
-            .filter(|x| x.is_some())
-            .map(|x| x.as_ref().unwrap())
-            .map(|(_layout, res)| res.is_ok())
+            .filter_map(|x| x.as_ref())
+            .filter(|(_layout, res)| res.is_ok())
             .count() as _,
         deallocations: all_deallocations.len() as _,
         allocation_measurements: all_alloc_measurements,
@@ -142,7 +186,8 @@ fn print_bench_results(bench_name: &str, res: &BenchRunResults) {
         res.allocation_attempts, res.successful_allocations, res.deallocations
     );
     println!(
-        "    median={:6} ticks, average={:6} ticks, min={:6} ticks, max={:6} ticks",
+        "    median={:6} ticks, average={:6} ticks, \
+         min={:6} ticks, max={:6} ticks",
         res.allocation_measurements[res.allocation_measurements.len() / 2],
         res.allocation_measurements.iter().sum::<u64>()
             / (res.allocation_measurements.len() as u64),

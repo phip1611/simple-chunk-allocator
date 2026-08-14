@@ -1,7 +1,7 @@
 /*
 MIT License
 
-Copyright (c) 2022 Philipp Schuster
+Copyright (c) 2026 Philipp Schuster
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -23,8 +23,8 @@ SOFTWARE.
 */
 //! Module for macros `heap!` and `heap_bitmap!`.
 
-/// Helper macro that initializes a page-aligned static memory area with a correct size to
-/// get used as heap in [`crate::GlobalChunkAllocator`].
+/// Helper macro that initializes a page-aligned static memory area with a
+/// correct size to get used as heap in [`crate::GlobalChunkAllocator`].
 ///
 /// # Example
 /// ```rust
@@ -73,8 +73,9 @@ macro_rules! heap {
     };
 }
 
-/// Helper macro that initializes a page-aligned static memory area with a correct size to
-/// get used as heap bookkeeping bitmap in [`crate::GlobalChunkAllocator`].
+/// Helper macro that initializes a page-aligned static memory area with a
+/// correct size to get used as heap bookkeeping bitmap in
+/// [`crate::GlobalChunkAllocator`].
 ///
 /// # Example
 /// ```rust
@@ -124,7 +125,8 @@ mod tests {
         );*/
     }
 
-    // Tests that the macro `heap_bitmap!` compiles with all supported input types.
+    // Tests that the macro `heap_bitmap!` compiles with all supported input
+    // types.
     #[test]
     fn test_macro_heap_bitmap_compiles() {
         const A: usize = 8;

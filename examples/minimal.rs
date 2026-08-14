@@ -1,7 +1,7 @@
 /*
 MIT License
 
-Copyright (c) 2022 Philipp Schuster
+Copyright (c) 2026 Philipp Schuster
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -21,44 +21,65 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
-#![feature(const_mut_refs)]
 #![feature(allocator_api)]
 
-use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
+use simple_chunk_allocator::{
+    GlobalChunkAllocator, PageAligned, heap, heap_bitmap,
+};
 
 // The macros help to get a correctly sized arrays types.
 // I page-align them for better caching and to improve the availability of
 // page-aligned addresses.
 
-/// Backing storage for heap (1Mib). (read+write) static memory in final executable.
+/// Backing storage for heap (1Mib). (read+write) static memory in final
+/// executable.
 ///
-/// heap!: first argument is chunk amount, second argument is size of each chunk.
-///        If no arguments are provided it falls back to defaults.
+/// heap!: first argument is chunk amount, second argument is size of each
+/// chunk.        If no arguments are provided it falls back to defaults.
 ///        Example: `heap!(chunks=16, chunksize=256)`.
 static mut HEAP: PageAligned<[u8; 1048576]> = heap!();
-/// Backing storage for heap bookkeeping bitmap. (read+write) static memory in final executable.
+/// Backing storage for heap bookkeeping bitmap. (read+write) static memory in
+/// final executable.
 ///
 /// heap_bitmap!: first argument is amount of chunks.
 ///               If no argument is provided it falls back to a default.
 ///               Example: `heap_bitmap!(chunks=16)`.
 static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 
-// please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
+// please make sure that the backing memory is at least CHUNK_SIZE aligned;
+// better page-aligned
 #[global_allocator]
-static ALLOCATOR: GlobalChunkAllocator =
-    unsafe { GlobalChunkAllocator::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const()) };
+// SAFETY: these statics are exclusively owned by `ALLOCATOR`.
+static ALLOCATOR: GlobalChunkAllocator = unsafe {
+    GlobalChunkAllocator::new_raw(
+        core::ptr::slice_from_raw_parts_mut(
+            core::ptr::addr_of_mut!(HEAP).cast(),
+            1048576,
+        ),
+        core::ptr::slice_from_raw_parts_mut(
+            core::ptr::addr_of_mut!(HEAP_BITMAP).cast(),
+            512,
+        ),
+    )
+};
 
 fn main() {
-    // at this point, the allocator already got used a bit by the Rust runtime that executes
-    // before main() gets called. This is not the case if a `no_std` binary gets produced.
+    // at this point, the allocator already got used a bit by the Rust runtime
+    // that executes before main() gets called. This is not the case if a
+    // `no_std` binary gets produced.
     let old_usage = ALLOCATOR.usage();
-    let mut vec = Vec::new();
-    vec.push(1);
-    vec.push(2);
-    vec.push(3);
-    assert!(ALLOCATOR.usage() > old_usage);
 
-    // use "allocator_api"-feature. You can use this if "ALLOCATOR" is not registered as
-    // the global allocator. Otherwise, it is already the default.
+    #[allow(clippy::vec_init_then_push)]
+    {
+        let mut vec = Vec::new();
+        vec.push(1);
+        vec.push(2);
+        vec.push(3);
+        assert!(ALLOCATOR.usage() > old_usage);
+    }
+
+    // use "allocator_api"-feature. You can use this if "ALLOCATOR" is not
+    // registered as the global allocator. Otherwise, it is already the
+    // default.
     let _boxed = Box::new_in([1, 2, 3], ALLOCATOR.allocator_api_glue());
 }

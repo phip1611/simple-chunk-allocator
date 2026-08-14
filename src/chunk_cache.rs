@@ -1,7 +1,7 @@
 /*
 MIT License
 
-Copyright (c) 2022 Philipp Schuster
+Copyright (c) 2026 Philipp Schuster
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -39,8 +39,8 @@ pub(crate) struct ChunkCache {
 impl ChunkCache {
     /// Constructor.
     ///
-    /// The initialization assumes that the backing memory starts at a page aligned address.
-    /// If this is not the case, this will cost performance but will not result in error.
+    /// The initialization assumes that the backing memory starts at a
+    /// page-aligned address. Otherwise, this costs performance but is correct.
     /// This cache is only a hint. The allocator will verify the availability of
     /// the entries and the alignment in any case.
     #[inline]
@@ -55,9 +55,14 @@ impl ChunkCache {
         }
     }
 
-    /// Updates an existing cache entry, if one exists for the provided alignment.
+    /// Updates an existing cache entry for the provided alignment, if any.
     #[inline(always)]
-    pub const fn update(&mut self, index: usize, alignment: usize, chunk_count: usize) {
+    pub const fn update(
+        &mut self,
+        index: usize,
+        alignment: usize,
+        chunk_count: usize,
+    ) {
         debug_assert!(chunk_count > 0, "chunk count must be > 0");
         let entry = self.lookup_entry_by_alignment(alignment);
         if entry.is_none() {
@@ -66,7 +71,11 @@ impl ChunkCache {
             let entry_ref = entry.as_ref().unwrap();
             // prevent fragmentation; prefer small memory regions
             if entry_ref.chunk_count > chunk_count {
-                entry.replace(ChunkCacheEntry::new(index, alignment, chunk_count));
+                entry.replace(ChunkCacheEntry::new(
+                    index,
+                    alignment,
+                    chunk_count,
+                ));
             }
         }
     }
@@ -83,7 +92,9 @@ impl ChunkCache {
             None
         } else {
             let entry_ref = entry.as_ref().unwrap();
-            if entry_ref.chunk_count >= chunk_count && entry_ref.alignment >= alignment {
+            if entry_ref.chunk_count >= chunk_count
+                && entry_ref.alignment >= alignment
+            {
                 entry.take()
             } else {
                 None
@@ -95,7 +106,10 @@ impl ChunkCache {
         &mut self,
         alignment: usize,
     ) -> &mut Option<ChunkCacheEntry> {
-        debug_assert!(alignment.is_power_of_two(), "alignment must be power of 2");
+        debug_assert!(
+            alignment.is_power_of_two(),
+            "alignment must be power of 2"
+        );
         match alignment {
             256 => &mut self.align_256,
             512 => &mut self.align_512,
@@ -112,8 +126,9 @@ impl ChunkCache {
 pub(crate) struct ChunkCacheEntry {
     /// Chunk index inside
     index: usize,
-    /// Alignment. Power of 2. If this is 256 the entry can still be page-aligned (4096).
-    /// This is only a hint that gets set and used during runtime.
+    /// Alignment. Power of 2. If this is 256 the entry can still be
+    /// page-aligned (4096). This is only a hint that gets set and used
+    /// during runtime.
     alignment: usize,
     /// Length of the continuous memory region in chunks. x > 0.
     chunk_count: usize,
@@ -121,9 +136,16 @@ pub(crate) struct ChunkCacheEntry {
 
 impl ChunkCacheEntry {
     #[inline(always)]
-    pub const fn new(index: usize, alignment: usize, chunk_count: usize) -> Self {
+    pub const fn new(
+        index: usize,
+        alignment: usize,
+        chunk_count: usize,
+    ) -> Self {
         debug_assert!(chunk_count > 0, "chunk count must be > 0");
-        debug_assert!(alignment.is_power_of_two(), "alignment must be power of 2");
+        debug_assert!(
+            alignment.is_power_of_two(),
+            "alignment must be power of 2"
+        );
         Self {
             index,
             alignment,

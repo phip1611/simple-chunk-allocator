@@ -1,12 +1,11 @@
 /*
- * This example is a freestanding Linux binary. This means no libc but it can be gracefully start
- * and exit on Linux. It uses the "simple-chunk-allocator" crate for its heap usage.
+ * This freestanding Linux binary uses no libc but can start and exit gracefully.
+ * It uses the "simple-chunk-allocator" crate for heap management.
  */
 
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
-#![feature(const_mut_refs)]
 
 extern crate alloc;
 
@@ -15,15 +14,27 @@ use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::Write;
 use core::panic::PanicInfo;
-use simple_chunk_allocator::{heap, heap_bitmap, GlobalChunkAllocator, PageAligned};
+use simple_chunk_allocator::{
+    heap, heap_bitmap, GlobalChunkAllocator, PageAligned,
+};
 
 static mut HEAP: PageAligned<[u8; 256]> = heap!(chunks = 16, chunksize = 16);
 static mut HEAP_BITMAP: PageAligned<[u8; 2]> = heap_bitmap!(chunks = 16);
 
-// please make sure that the backing memory is at least CHUNK_SIZE aligned; better page-aligned
+// The backing memory must be CHUNK_SIZE-aligned; page alignment is preferable.
 #[global_allocator]
+// SAFETY: these statics are exclusively owned by `ALLOCATOR`.
 static ALLOCATOR: GlobalChunkAllocator<16> = unsafe {
-    GlobalChunkAllocator::<16>::new(HEAP.deref_mut_const(), HEAP_BITMAP.deref_mut_const())
+    GlobalChunkAllocator::<16>::new_raw(
+        core::ptr::slice_from_raw_parts_mut(
+            core::ptr::addr_of_mut!(HEAP).cast(),
+            256,
+        ),
+        core::ptr::slice_from_raw_parts_mut(
+            core::ptr::addr_of_mut!(HEAP_BITMAP).cast(),
+            2,
+        ),
+    )
 };
 
 /// Referenced as entry by linker argument. Entry into the code.
@@ -47,8 +58,10 @@ struct StdoutWriter;
 impl core::fmt::Write for StdoutWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         const STDOUT: u64 = 1;
-        let written_bytes =
-            unsafe { linux_syscall_3(LINUX_SYS_WRITE, STDOUT, s.as_ptr() as _, s.len() as _) };
+        // SAFETY: the syscall arguments describe the valid bytes of `s`.
+        let written_bytes = unsafe {
+            linux_syscall_3(LINUX_SYS_WRITE, STDOUT, s.as_ptr() as _, s.len() as _)
+        };
         assert_eq!(
             written_bytes as usize,
             s.len(),
@@ -59,6 +72,7 @@ impl core::fmt::Write for StdoutWriter {
 }
 
 fn exit() -> ! {
+    // SAFETY: `exit_group` takes no pointer arguments and never returns.
     unsafe {
         linux_syscall_3(LINUX_SYS_EXIT_GROUP, 0, 0, 0);
     }

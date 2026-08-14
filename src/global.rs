@@ -33,6 +33,7 @@ pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
 
 /// Synchronized high-level wrapper around [`ChunkAllocator`] that implements
 /// the Rust traits [`GlobalAlloc`] which enables the usage as global allocator.
+///
 /// The method [`GlobalChunkAllocator::allocator_api_glue`] returns an object of
 /// type [`AllocatorApiGlue`] which can be used with the `allocator_api`
 /// feature.
@@ -293,7 +294,7 @@ mod tests {
         drop(vec1);
         assert_eq!(75.0, ALLOCATOR.usage());
         let vec3 = Vec::<u8, _>::with_capacity_in(
-            DEFAULT_CHUNK_SIZE * 1,
+            DEFAULT_CHUNK_SIZE,
             ALLOCATOR.allocator_api_glue(),
         );
         assert_eq!(87.5, ALLOCATOR.usage());
@@ -340,6 +341,7 @@ mod tests {
             for i in 0..DEFAULT_CHUNK_SIZE {
                 vec.resize(i, 42);
             }
+            let _ = vec;
         }
         let avg_duration_with_fast_realloc =
             (Instant::now() - begin).as_secs_f64() / RUNS as f64;
@@ -350,6 +352,7 @@ mod tests {
             let mut vec = Vec::<u8, _>::new_in(ALLOCATOR.allocator_api_glue());
             // realloc optimization can not be used; always requires one more
             // chunk
+            #[allow(clippy::identity_op)]
             vec.resize(DEFAULT_CHUNK_SIZE * 1 + 1, 42);
             vec.resize(DEFAULT_CHUNK_SIZE * 2 + 1, 42);
             vec.resize(DEFAULT_CHUNK_SIZE * 3 + 1, 42);
@@ -357,6 +360,8 @@ mod tests {
             vec.resize(DEFAULT_CHUNK_SIZE * 5 + 1, 42);
             vec.resize(DEFAULT_CHUNK_SIZE * 6 + 1, 42);
             vec.resize(DEFAULT_CHUNK_SIZE * 7 + 1, 42);
+
+            let _ = vec;
         }
         let avg_duration_without_fast_realloc =
             (Instant::now() - begin).as_secs_f64() / RUNS as f64;

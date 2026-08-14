@@ -68,11 +68,15 @@ fn main() {
     // that executes before main() gets called. This is not the case if a
     // `no_std` binary gets produced.
     let old_usage = ALLOCATOR.usage();
-    let mut vec = Vec::new();
-    vec.push(1);
-    vec.push(2);
-    vec.push(3);
-    assert!(ALLOCATOR.usage() > old_usage);
+
+    #[allow(clippy::vec_init_then_push)]
+    {
+        let mut vec = Vec::new();
+        vec.push(1);
+        vec.push(2);
+        vec.push(3);
+        assert!(ALLOCATOR.usage() > old_usage);
+    }
 
     // use "allocator_api"-feature. You can use this if "ALLOCATOR" is not
     // registered as the global allocator. Otherwise, it is already the

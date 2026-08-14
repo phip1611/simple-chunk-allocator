@@ -153,9 +153,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             return Err(ChunkAllocatorError::BadChunkSize);
         }
 
-        let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
-
-        if heap.is_empty() || !heap_is_multiple_of_chunk_size {
+        if heap.is_empty() || !heap.len().is_multiple_of(CHUNK_SIZE) {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
@@ -168,8 +166,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         // check bitmap memory has correct length
         let chunk_count = heap.len() / CHUNK_SIZE;
 
-        let chunk_count_is_multiple_of_8 = chunk_count % 8 == 0;
-        if !chunk_count_is_multiple_of_8 {
+        if !chunk_count.is_multiple_of(8) {
             return Err(ChunkAllocatorError::BadHeapMemory);
         }
 
@@ -217,19 +214,16 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             "chunk size must be a power of two!"
         );
 
-        let heap_is_multiple_of_chunk_size = heap.len() % CHUNK_SIZE == 0;
-
         assert!(
-            !heap.is_empty() && heap_is_multiple_of_chunk_size,
+            !heap.is_empty() && heap.len().is_multiple_of(CHUNK_SIZE),
             "heap must be not empty and a multiple of the chunk size"
         );
 
         // check bitmap memory has correct length
         let chunk_count = heap.len() / CHUNK_SIZE;
 
-        let chunk_count_is_multiple_of_8 = chunk_count % 8 == 0;
         assert!(
-            chunk_count_is_multiple_of_8,
+            chunk_count.is_multiple_of(8),
             "chunk count must be a multiple of 8"
         );
 
@@ -482,11 +476,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[inline(always)]
     const fn calc_required_chunks(&self, size: usize) -> usize {
         assert!(size > 0);
-        if size % CHUNK_SIZE == 0 {
-            size / CHUNK_SIZE
-        } else {
-            (size / CHUNK_SIZE) + 1
-        }
+        size.div_ceil(CHUNK_SIZE)
     }
 
     /// Performs initialization steps on the first allocation.
@@ -1011,7 +1001,7 @@ mod tests {
         unsafe {
             assert_eq!(heap_ptr, alloc.chunk_index_to_ptr(0));
             assert_eq!(
-                heap_ptr.add(alloc.chunk_size() * 1),
+                heap_ptr.add(alloc.chunk_size()),
                 alloc.chunk_index_to_ptr(1)
             );
             assert_eq!(

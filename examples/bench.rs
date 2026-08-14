@@ -165,15 +165,14 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
     }
 
     // sort
-    all_alloc_measurements.sort_by(|x1, x2| x1.cmp(x2));
+    all_alloc_measurements.sort_unstable();
 
     BenchRunResults {
         allocation_attempts: all_allocations.len() as _,
         successful_allocations: all_allocations
             .iter()
-            .filter(|x| x.is_some())
-            .map(|x| x.as_ref().unwrap())
-            .map(|(_layout, res)| res.is_ok())
+            .filter_map(|x| x.as_ref())
+            .filter(|(_layout, res)| res.is_ok())
             .count() as _,
         deallocations: all_deallocations.len() as _,
         allocation_measurements: all_alloc_measurements,

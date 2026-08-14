@@ -624,8 +624,21 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         let required_chunks = self.calc_required_chunks(old_layout.size());
         let occupied_size = required_chunks * CHUNK_SIZE;
 
-        // fast return: reuse existing allocation as it is big enough
+        // Reuse the allocation when it already has enough space.
         if new_size <= occupied_size {
+            let required_new_chunks =
+                self.calc_required_chunks(new_size.max(1));
+            if required_new_chunks < required_chunks {
+                // SAFETY: callers provide a live allocation from this
+                // allocator.
+                let index = unsafe { self.ptr_to_chunk_index(ptr.as_ptr()) };
+                for chunk_index in
+                    index + required_new_chunks..index + required_chunks
+                {
+                    self.mark_chunk_as_free(chunk_index);
+                }
+                self.chunks_in_use -= required_chunks - required_new_chunks;
+            }
             log::trace!("realloc fast return possible!");
             Ok(NonNull::slice_from_raw_parts(ptr, new_size))
         } else {
@@ -1198,6 +1211,43 @@ mod tests {
             // SAFETY: each pointer is live and paired with its original layout.
             unsafe { allocator.deallocate(ptr, layout) };
         }
+        assert_eq!(allocator.usage(), 0.0);
+    }
+
+    #[test]
+    fn test_realloc_preserves_data_and_handles_zero_size() {
+        let (mut heap, mut bitmap) =
+            helpers::create_heap_and_bitmap_vectors_for::<256>(16);
+        let mut allocator =
+            ChunkAllocator::<256>::new(&mut heap, &mut bitmap).unwrap();
+        let old_layout = Layout::from_size_align(128, 64).unwrap();
+        let allocation = allocator.allocate(old_layout).unwrap();
+        let record = helpers::Allocation {
+            ptr: allocation.cast(),
+            layout: old_layout,
+            pattern: 0xa5,
+        };
+        record.fill();
+
+        // SAFETY: `record` describes a live allocation from `allocator`.
+        let grown =
+            unsafe { allocator.realloc(record.ptr, old_layout, 600) }.unwrap();
+        let grown_layout = Layout::from_size_align(600, 64).unwrap();
+        let grown_record = helpers::Allocation {
+            ptr: grown.cast(),
+            layout: grown_layout,
+            pattern: record.pattern,
+        };
+        grown_record.assert_pattern(old_layout.size());
+
+        // SAFETY: `grown_record` describes the live replacement allocation.
+        let zero =
+            unsafe { allocator.realloc(grown_record.ptr, grown_layout, 0) }
+                .unwrap();
+        assert_eq!(zero.len(), 0);
+        let zero_layout = Layout::from_size_align(0, 1).unwrap();
+        // SAFETY: the zero-size result retains the same live allocation.
+        unsafe { allocator.deallocate(zero.cast(), zero_layout) };
         assert_eq!(allocator.usage(), 0.0);
     }
 }

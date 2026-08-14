@@ -1,8 +1,7 @@
 [package]
 name = "simple-chunk-allocator"
 description = """
-A simple `no_std` allocator that manages fixed-size chunks. It is useful for
-basic `no_std` binaries with a fixed static heap, without paging or page tables.
+A nightly-only `no_std` allocator that manages fixed-size chunks in caller-provided static memory.
 """
 version = "0.1.6"
 edition = "2024"

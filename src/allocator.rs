@@ -411,6 +411,59 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             .ok_or(ChunkAllocatorError::OutOfMemory)
     }
 
+    /// Measures the free-region search without changing allocation state.
+    ///
+    /// This hook is available only for the crate's Criterion benchmarks.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    #[inline]
+    pub fn benchmark_find_free_region(
+        &mut self,
+        chunk_count: usize,
+        alignment: usize,
+    ) -> Result<usize, ChunkAllocatorError> {
+        if self.is_first_alloc.get() {
+            self.init()?;
+        }
+        self.find_free_continuous_memory_region(chunk_count, alignment)
+    }
+
+    /// Marks a known-free chunk range used for Criterion benchmarks.
+    ///
+    /// Panics when the range is outside the heap or already occupied.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    #[inline]
+    pub fn benchmark_mark_range_as_used(
+        &mut self,
+        index: usize,
+        chunk_count: usize,
+    ) {
+        assert!(index + chunk_count <= self.chunk_count());
+        for chunk_index in index..index + chunk_count {
+            self.mark_chunk_as_used(chunk_index);
+        }
+        self.chunks_in_use += chunk_count;
+    }
+
+    /// Marks a known-used chunk range free for Criterion benchmarks.
+    ///
+    /// Panics when the range is outside the heap or already free.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    #[inline]
+    pub fn benchmark_mark_range_as_free(
+        &mut self,
+        index: usize,
+        chunk_count: usize,
+    ) {
+        assert!(index + chunk_count <= self.chunk_count());
+        for chunk_index in index..index + chunk_count {
+            self.mark_chunk_as_free(chunk_index);
+        }
+        self.chunks_in_use -= chunk_count;
+    }
+
     /// Returns the pointer to the beginning of the chunk.
     #[inline(always)]
     unsafe fn chunk_index_to_ptr(&mut self, chunk_index: usize) -> *mut u8 {

@@ -30,6 +30,10 @@ exclude = [
 codegen-units = 1
 lto = true
 
+[features]
+# Exposes internal measurement hooks used only by Criterion benchmarks.
+bench = []
+
 [dependencies]
 libm = "0.2"
 log = "0.4"

@@ -64,8 +64,7 @@ impl Fixture {
         while self.allocator.allocate(layout).is_ok() {}
     }
 
-    fn fragment(&mut self) {
-        let layout = Layout::from_size_align(DEFAULT_CHUNK_SIZE, 1).unwrap();
+    fn fragment(&mut self, layout: Layout) {
         let mut allocations = Vec::new();
         while let Ok(allocation) = self.allocator.allocate(layout) {
             allocations.push(allocation.as_non_null_ptr());
@@ -129,6 +128,24 @@ impl GlobalFixture {
         // `layout`.
         unsafe { self.allocator.dealloc(ptr.as_ptr(), layout) };
     }
+
+    fn fragment(&self, layout: Layout) {
+        let mut allocations = Vec::new();
+        loop {
+            // SAFETY: `layout` is valid and this fixture exclusively owns the
+            // allocator.
+            let ptr = unsafe { self.allocator.alloc(layout) };
+            let Some(ptr) = NonNull::new(ptr) else {
+                break;
+            };
+            allocations.push(ptr);
+        }
+        for (index, allocation) in allocations.into_iter().enumerate() {
+            if index % 2 == 0 {
+                self.deallocate(allocation, layout);
+            }
+        }
+    }
 }
 
 fn benchmark_phases(criterion: &mut Criterion) {
@@ -171,7 +188,7 @@ fn benchmark_phases(criterion: &mut Criterion) {
         bencher.iter_batched(
             || {
                 let mut fixture = Fixture::empty();
-                fixture.fragment();
+                fixture.fragment(one_chunk);
                 fixture
             },
             |mut fixture| {
@@ -337,10 +354,107 @@ fn benchmark_global_operations(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_fragmented_operations(criterion: &mut Criterion) {
+    let layouts = [
+        (
+            "one_chunk",
+            Layout::from_size_align(DEFAULT_CHUNK_SIZE, 1).unwrap(),
+        ),
+        (
+            "multi_chunk",
+            Layout::from_size_align(DEFAULT_CHUNK_SIZE * 16, 1).unwrap(),
+        ),
+        ("page_aligned", Layout::from_size_align(4096, 4096).unwrap()),
+    ];
+    let mut direct = criterion.benchmark_group("direct_fragmented");
+
+    for (name, layout) in layouts {
+        direct.bench_function(format!("allocate/{name}"), |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut fixture = Fixture::empty();
+                    fixture.fragment(layout);
+                    fixture
+                },
+                |mut fixture| black_box(fixture.allocate(layout)),
+                BatchSize::SmallInput,
+            );
+        });
+        direct.bench_function(format!("deallocate/{name}"), |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut fixture = Fixture::empty();
+                    fixture.fragment(layout);
+                    let ptr = fixture.allocate(layout);
+                    (fixture, ptr)
+                },
+                |(mut fixture, ptr)| {
+                    // SAFETY: setup allocated `ptr` with `layout`.
+                    unsafe { fixture.allocator.deallocate(ptr, layout) };
+                    black_box(fixture.allocator.usage())
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        direct.bench_function(format!("cycle/{name}"), |bencher| {
+            let mut fixture = Fixture::empty();
+            fixture.fragment(layout);
+            bencher.iter(|| {
+                let ptr = fixture.allocate(layout);
+                // SAFETY: this iteration allocated `ptr` with `layout`.
+                unsafe { fixture.allocator.deallocate(ptr, layout) };
+                black_box(ptr)
+            });
+        });
+    }
+    direct.finish();
+
+    let mut global = criterion.benchmark_group("global_fragmented");
+    for (name, layout) in layouts {
+        global.bench_function(format!("allocate/{name}"), |bencher| {
+            bencher.iter_batched(
+                || {
+                    let fixture = GlobalFixture::empty();
+                    fixture.fragment(layout);
+                    fixture
+                },
+                |fixture| black_box(fixture.allocate(layout)),
+                BatchSize::SmallInput,
+            );
+        });
+        global.bench_function(format!("deallocate/{name}"), |bencher| {
+            bencher.iter_batched(
+                || {
+                    let fixture = GlobalFixture::empty();
+                    fixture.fragment(layout);
+                    let ptr = fixture.allocate(layout);
+                    (fixture, ptr)
+                },
+                |(fixture, ptr)| {
+                    fixture.deallocate(ptr, layout);
+                    black_box(fixture.allocator.usage())
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        global.bench_function(format!("cycle/{name}"), |bencher| {
+            let fixture = GlobalFixture::empty();
+            fixture.fragment(layout);
+            bencher.iter(|| {
+                let ptr = fixture.allocate(layout);
+                fixture.deallocate(ptr, layout);
+                black_box(ptr)
+            });
+        });
+    }
+    global.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_phases,
     benchmark_direct_operations,
     benchmark_global_operations,
+    benchmark_fragmented_operations,
 );
 criterion_main!(benches);

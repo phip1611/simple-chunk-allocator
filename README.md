@@ -76,3 +76,11 @@ The `examples/minimal.rs` program demonstrates a hosted global allocator. The
 `freestanding-linux-example` directory contains an x86_64 Linux binary without
 libc. It is illustrative only; normal Linux programs should use the operating
 system allocator.
+
+## Benchmarks
+
+Run the Criterion baseline for allocator phases and complete operations with:
+
+```bash
+cargo +nightly bench --bench allocator --features bench
+```

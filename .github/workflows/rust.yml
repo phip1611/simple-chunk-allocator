@@ -34,7 +34,7 @@ jobs:
       - if: matrix.rust == 'nightly'
         name: Test with Miri
         run: cargo miri test
-      - run: cargo run --release --example bench
+      - run: cargo bench --bench allocator --features bench --no-run
       - run: cargo run --example minimal
 
   build_nostd:

@@ -123,6 +123,7 @@ SOFTWARE.
     clippy::all,
     clippy::cargo,
     clippy::nursery,
+    clippy::undocumented_unsafe_blocks,
     // clippy::restriction,
     // clippy::pedantic
 )]

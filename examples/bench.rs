@@ -46,14 +46,17 @@ static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> = PageAlignedBytes(
 
 struct GlobalAllocAdapter<A>(A);
 
+// SAFETY: each method forwards the allocation contract to the wrapped allocator.
 unsafe impl<A: GlobalAlloc> Allocator for GlobalAllocAdapter<A> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        // SAFETY: `GlobalAlloc::alloc` accepts every valid `Layout`.
         let ptr = unsafe { self.0.alloc(layout) };
         let ptr = NonNull::new(ptr).ok_or(AllocError)?;
         Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: `Allocator::deallocate` requires this matching allocation.
         unsafe { self.0.dealloc(ptr.as_ptr(), layout) }
     }
 }
@@ -68,6 +71,7 @@ unsafe impl<A: GlobalAlloc> Allocator for GlobalAllocAdapter<A> {
 /// execute it with `RUSTFLAGS="-C target-cpu=native" cargo run --example bench --release`
 ///
 fn main() {
+    // SAFETY: these statics are exclusively owned by `chunk_allocator`.
     let chunk_allocator = unsafe {
         GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new_raw(
             core::ptr::slice_from_raw_parts_mut(
@@ -81,6 +85,7 @@ fn main() {
         )
     };
 
+    // SAFETY: this separate static is exclusively owned by the linked-list allocator.
     let linked_list_allocator = unsafe {
         linked_list_allocator::LockedHeap::new(
             core::ptr::addr_of_mut!(LINKED_LIST_HEAP_MEMORY).cast(),
@@ -98,6 +103,7 @@ fn main() {
 }
 
 fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
+    // SAFETY: `rdtscp` is available on the x86 target used by this benchmark.
     let now_fn = || unsafe { x86::time::rdtscp().0 };
 
     let mut all_allocations = Vec::new();
@@ -138,6 +144,7 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
             .filter(|(_, res)| res.is_ok())
             .map(|(layout, res)| (layout, res.unwrap()))
             .take(count_allocations_to_free)
+            // SAFETY: every retained allocation was returned by `alloc` with `layout`.
             .for_each(|(layout, allocation)| unsafe {
                 // println!("dealloc: layout={:?}", layout);
                 all_deallocations.push((layout, allocation));

@@ -101,8 +101,7 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     chunks_in_use: usize,
 }
 
-// The allocator exclusively owns the backing memory for `'a`; the raw pointers
-// are only used to avoid invalidating returned allocation pointers.
+// SAFETY: `backing_memory` represents exclusive ownership of both allocations.
 unsafe impl<'a, const CHUNK_SIZE: usize> Send for ChunkAllocator<'a, CHUNK_SIZE> {}
 
 impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
@@ -244,6 +243,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// The pointers must be valid, non-null, uniquely owned slices for the lifetime `'a`.
     #[inline]
     pub const unsafe fn new_raw(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
+        // SAFETY: required validity and exclusivity are guaranteed by the caller.
         unsafe { Self::new_const(&mut *heap, &mut *bitmap) }
     }
 
@@ -285,6 +285,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             self.chunk_count() - 1
         );
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
+        // SAFETY: `byte_i` is within the validated bitmap capacity.
         let relevant_bit = unsafe { (*self.bitmap.as_ptr().add(byte_i) >> bit) & 1 };
         relevant_bit == 0
     }
@@ -301,6 +302,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
         // xor => keep all bits, except bitflip at relevant position
+        // SAFETY: `byte_i` is within the validated bitmap capacity.
         unsafe { *self.bitmap.as_ptr().add(byte_i) ^= 1 << bit };
     }
 
@@ -316,6 +318,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
         // xor => keep all bits, except bitflip at relevant position
+        // SAFETY: `byte_i` is within the validated bitmap capacity.
         unsafe {
             let byte = self.bitmap.as_ptr().add(byte_i);
             *byte ^= 1 << bit;
@@ -379,6 +382,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
                 }
 
                 // Does the heap address has the right alignment to fulfill the request?
+                // SAFETY: `chunk_index` is within the allocator's heap.
                 let ptr = unsafe { self.chunk_index_to_ptr(chunk_index) };
                 if ptr.align_offset(alignment) != 0 {
                     return None;
@@ -415,6 +419,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             chunk_index < self.chunk_count(),
             "chunk_index out of range!"
         );
+        // SAFETY: `chunk_index` is bounded by `chunk_count`.
         unsafe { self.heap.as_ptr().add(chunk_index * CHUNK_SIZE) }
     }
 
@@ -422,6 +427,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[inline(always)]
     unsafe fn ptr_to_chunk_index(&self, ptr: *const u8) -> usize {
         let heap_begin_inclusive = self.heap.as_ptr().cast_const();
+        // SAFETY: `heap_len` is the length of the backing allocation.
         let heap_end_exclusive = unsafe { self.heap.as_ptr().add(self.heap_len) };
         debug_assert!(
             heap_begin_inclusive <= ptr && ptr < heap_end_exclusive,
@@ -451,6 +457,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     fn init(&mut self) -> Result<(), ChunkAllocatorError> {
         self.is_first_alloc.replace(false);
         // Zero bitmap
+        // SAFETY: `bitmap` points to `bitmap_len` bytes of exclusively owned storage.
         unsafe { core::ptr::write_bytes(self.bitmap.as_ptr(), 0, self.bitmap_len) };
 
         if self.heap.as_ptr().align_offset(4096) != 0 && CHUNK_SIZE < 4096 {
@@ -523,6 +530,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             self.maybe_next_free_chunk = ChunkCacheEntry::new(next_index, CHUNK_SIZE, 1);
         }
 
+        // SAFETY: `index` was returned from the in-bounds chunk search.
         let heap_ptr = unsafe { self.chunk_index_to_ptr(index) };
         log::trace!(
             "alloc: layout={layout:?}, ptr={heap_ptr:?}, #chunks={}",
@@ -549,6 +557,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         log::trace!("dealloc: layout={:?}, #chunks={})", layout, freed_chunks);
 
+        // SAFETY: callers must pass a pointer returned by this allocator.
         let index = unsafe { self.ptr_to_chunk_index(ptr.as_ptr()) };
         for i in index..index + freed_chunks {
             self.mark_chunk_as_free(i);
@@ -613,12 +622,12 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             // SAFETY: the caller must ensure that the `new_size` does not overflow.
             // `layout.align()` comes from a `Layout` and is thus guaranteed to be valid.
             let new_layout =
+                // SAFETY: `new_size` and the original layout satisfy `realloc`'s contract.
                 unsafe { Layout::from_size_align_unchecked(new_size, old_layout.align()) };
             // SAFETY: the caller must ensure that `new_layout` is greater than zero.
             let new_ptr = self.allocate(new_layout)?;
 
-            // SAFETY: the previously allocated block cannot overlap the newly allocated block.
-            // The safety contract for `dealloc` must be upheld by the caller.
+            // SAFETY: the allocations do not overlap and the caller owns `ptr`.
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     ptr.as_ptr(),
@@ -651,6 +660,7 @@ mod tests {
         /// Forwards requests to the global Rust allocator provided by the standard library.
         pub struct GlobalPageAlignedAlloc;
 
+        // SAFETY: each method forwards to `Global` using the matching layout.
         unsafe impl Allocator for GlobalPageAlignedAlloc {
             fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
                 let alignment = max(layout.align(), 4096);
@@ -665,6 +675,7 @@ mod tests {
                 // unwrap should never fail, because layout.align() is already a power
                 // of 2, otherwise the value not exist here.
                 let layout = layout.align_to(alignment).unwrap();
+                // SAFETY: delegated allocation used the same adjusted layout.
                 unsafe { Global.deallocate(ptr, layout) }
             }
         }
@@ -790,6 +801,7 @@ mod tests {
         static mut HEAP_BITMAP: [u8; BITMAP_SIZE] = [0; BITMAP_SIZE];
 
         // check that it compiles
+        // SAFETY: these statics are exclusively owned by this test allocator.
         let mut _alloc: ChunkAllocator = unsafe {
             ChunkAllocator::new_raw(
                 core::ptr::slice_from_raw_parts_mut(
@@ -892,6 +904,7 @@ mod tests {
         let heap_ptr = heap.as_ptr();
         let mut alloc: ChunkAllocator = ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
 
+        // SAFETY: all computed pointers remain within `heap`.
         unsafe {
             assert_eq!(heap_ptr, alloc.chunk_index_to_ptr(0));
             assert_eq!(

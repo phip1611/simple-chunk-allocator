@@ -98,6 +98,7 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
     /// The pointers must be valid, non-null, uniquely owned slices for the lifetime `'a`.
     #[inline]
     pub const unsafe fn new_raw(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
+        // SAFETY: required validity and exclusivity are guaranteed by the caller.
         let inner_alloc = unsafe { ChunkAllocator::<CHUNK_SIZE>::new_raw(heap, bitmap) };
         Self(spin::Mutex::new(inner_alloc))
     }
@@ -115,6 +116,7 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
     }
 }
 
+// SAFETY: the mutex serializes access to the exclusively owned backing memory.
 unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a, CHUNK_SIZE> {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -126,10 +128,12 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc for GlobalChunkAllocator<'a
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `GlobalAlloc::dealloc` requires a valid allocation from this allocator.
         unsafe { self.0.lock().deallocate(NonNull::new(ptr).unwrap(), layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: `GlobalAlloc::realloc` requires a valid allocation from this allocator.
         unsafe {
             self.0
                 .lock()
@@ -158,6 +162,7 @@ pub struct AllocatorApiGlue<'a, 'b, const CHUNK_SIZE: usize>(
     &'a GlobalChunkAllocator<'b, CHUNK_SIZE>,
 );
 
+// SAFETY: methods delegate to the mutex-protected `GlobalChunkAllocator`.
 unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
     #[inline]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
@@ -171,6 +176,7 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
     #[inline]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         let mut this = self.0.0.lock();
+        // SAFETY: `Allocator::deallocate` requires a valid allocation from `self`.
         unsafe { ChunkAllocator::deallocate(&mut *this, ptr, layout) }
     }
 
@@ -186,6 +192,7 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator for AllocatorApiGlue<'a, 
             "change of alignment currenly not supported"
         );
         let mut this = self.0.0.lock();
+        // SAFETY: `Allocator::grow` requires a valid allocation from `self`.
         unsafe { this.realloc(ptr, old_layout, new_layout.size()) }.map_err(|err| {
             log::error!("realloc error: {err:?}");
             AllocError
@@ -210,6 +217,7 @@ mod tests {
         const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
         static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
         static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> = PageAligned::new([0; BITMAP_SIZE]);
+        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
         static ALLOCATOR: GlobalChunkAllocator = unsafe {
             GlobalChunkAllocator::new_raw(
                 core::ptr::slice_from_raw_parts_mut(
@@ -261,6 +269,7 @@ mod tests {
         const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
         static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> = PageAligned::new([0; HEAP_SIZE]);
         static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> = PageAligned::new([0; BITMAP_SIZE]);
+        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
         static ALLOCATOR: GlobalChunkAllocator = unsafe {
             GlobalChunkAllocator::new_raw(
                 core::ptr::slice_from_raw_parts_mut(

@@ -247,6 +247,40 @@ mod tests {
         assert_eq!(0.0, ALLOCATOR.usage());
     }
 
+    #[test]
+    fn test_global_alloc_returns_null_on_out_of_memory() {
+        const CHUNK_COUNT: usize = 8;
+        const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
+        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
+        static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> =
+            PageAligned::new([0; HEAP_SIZE]);
+        static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> =
+            PageAligned::new([0; BITMAP_SIZE]);
+        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
+        static ALLOCATOR: GlobalChunkAllocator = unsafe {
+            GlobalChunkAllocator::new_raw(
+                core::ptr::slice_from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
+                    HEAP_SIZE,
+                ),
+                core::ptr::slice_from_raw_parts_mut(
+                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
+                    BITMAP_SIZE,
+                ),
+            )
+        };
+        let layout = Layout::from_size_align(HEAP_SIZE, 1).unwrap();
+
+        // SAFETY: `layout` is valid and the returned pointer is deallocated
+        // below.
+        let ptr = unsafe { GlobalAlloc::alloc(&ALLOCATOR, layout) };
+        assert!(!ptr.is_null());
+        // SAFETY: this valid request cannot fit while `ptr` is live.
+        assert!(unsafe { GlobalAlloc::alloc(&ALLOCATOR, layout) }.is_null());
+        // SAFETY: `ptr` is the live allocation returned for `layout`.
+        unsafe { GlobalAlloc::dealloc(&ALLOCATOR, ptr, layout) };
+    }
+
     /// Uses [`GlobalChunkAllocator`] against the Rust Allocator API to test
     /// if the realloc optimization works and is used.
     #[test]

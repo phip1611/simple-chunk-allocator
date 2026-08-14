@@ -284,16 +284,13 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[inline(always)]
     fn mark_chunk_as_used(&mut self, chunk_index: usize) {
         debug_assert!(chunk_index < self.chunk_count());
-        if !self.chunk_is_free(chunk_index) {
-            panic!(
-                "tried to mark chunk {} as used but it is already used",
-                chunk_index
-            );
-        }
+        debug_assert!(
+            self.chunk_is_free(chunk_index),
+            "tried to mark chunk {chunk_index} as used but it is already used"
+        );
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
-        // xor => keep all bits, except bitflip at relevant position
         // SAFETY: `byte_i` is within the validated bitmap capacity.
-        unsafe { *self.bitmap.as_ptr().add(byte_i) ^= 1 << bit };
+        unsafe { *self.bitmap.as_ptr().add(byte_i) |= 1 << bit };
     }
 
     /// Marks a chunk as free, i.e. write a 0 into the bitmap at the right
@@ -301,18 +298,15 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     #[inline(always)]
     fn mark_chunk_as_free(&mut self, chunk_index: usize) {
         debug_assert!(chunk_index < self.chunk_count());
-        if self.chunk_is_free(chunk_index) {
-            panic!(
-                "tried to mark chunk {} as free but it is already free",
-                chunk_index
-            );
-        }
+        debug_assert!(
+            !self.chunk_is_free(chunk_index),
+            "tried to mark chunk {chunk_index} as free but it is already free"
+        );
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
-        // xor => keep all bits, except bitflip at relevant position
         // SAFETY: `byte_i` is within the validated bitmap capacity.
         unsafe {
             let byte = self.bitmap.as_ptr().add(byte_i);
-            *byte ^= 1 << bit;
+            *byte &= !(1 << bit);
         }
     }
 

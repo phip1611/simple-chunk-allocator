@@ -279,34 +279,86 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         relevant_bit == 0
     }
 
-    /// Marks a chunk as used, i.e. write a 1 into the bitmap at the right
-    /// position.
+    /// Marks a contiguous known-free chunk range as used.
     #[inline(always)]
-    fn mark_chunk_as_used(&mut self, chunk_index: usize) {
-        debug_assert!(chunk_index < self.chunk_count());
+    fn mark_chunk_range_as_used(&mut self, start_index: usize, count: usize) {
+        let end_index = start_index + count;
+        debug_assert!(end_index <= self.chunk_count());
         debug_assert!(
-            self.chunk_is_free(chunk_index),
-            "tried to mark chunk {chunk_index} as used but it is already used"
+            (start_index..end_index).all(|index| self.chunk_is_free(index)),
+            "tried to mark an occupied chunk range as used"
         );
-        let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
-        // SAFETY: `byte_i` is within the validated bitmap capacity.
-        unsafe { *self.bitmap.as_ptr().add(byte_i) |= 1 << bit };
+        self.update_bitmap_range(start_index, end_index, true);
     }
 
-    /// Marks a chunk as free, i.e. write a 0 into the bitmap at the right
-    /// position.
+    /// Marks a contiguous known-used chunk range as free.
     #[inline(always)]
-    fn mark_chunk_as_free(&mut self, chunk_index: usize) {
-        debug_assert!(chunk_index < self.chunk_count());
+    fn mark_chunk_range_as_free(&mut self, start_index: usize, count: usize) {
+        let end_index = start_index + count;
+        debug_assert!(end_index <= self.chunk_count());
         debug_assert!(
-            !self.chunk_is_free(chunk_index),
-            "tried to mark chunk {chunk_index} as free but it is already free"
+            (start_index..end_index).all(|index| !self.chunk_is_free(index)),
+            "tried to mark a free chunk range as free"
         );
-        let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
-        // SAFETY: `byte_i` is within the validated bitmap capacity.
+        self.update_bitmap_range(start_index, end_index, false);
+    }
+
+    /// Sets or clears every bitmap bit in `start_index..end_index`.
+    #[inline(always)]
+    fn update_bitmap_range(
+        &mut self,
+        start_index: usize,
+        end_index: usize,
+        used: bool,
+    ) {
+        debug_assert!(start_index < end_index);
+        let start_byte = start_index / 8;
+        let start_bit = start_index % 8;
+        let end_byte = (end_index - 1) / 8;
+        let end_bit = (end_index - 1) % 8 + 1;
+
+        // SAFETY: both byte indices are within the validated bitmap range.
         unsafe {
-            let byte = self.bitmap.as_ptr().add(byte_i);
-            *byte &= !(1 << bit);
+            let bitmap = self.bitmap.as_ptr();
+            if start_byte == end_byte {
+                let mask = Self::bitmap_mask(start_bit, end_bit);
+                Self::update_bitmap_byte(bitmap.add(start_byte), mask, used);
+                return;
+            }
+
+            let first_mask = Self::bitmap_mask(start_bit, 8);
+            Self::update_bitmap_byte(bitmap.add(start_byte), first_mask, used);
+
+            let interior_start = start_byte + 1;
+            let interior_len = end_byte - interior_start;
+            core::ptr::write_bytes(
+                bitmap.add(interior_start),
+                if used { u8::MAX } else { 0 },
+                interior_len,
+            );
+
+            let last_mask = Self::bitmap_mask(0, end_bit);
+            Self::update_bitmap_byte(bitmap.add(end_byte), last_mask, used);
+        }
+    }
+
+    /// Returns a mask containing bits in `start_bit..end_bit`.
+    #[inline(always)]
+    const fn bitmap_mask(start_bit: usize, end_bit: usize) -> u8 {
+        debug_assert!(start_bit < end_bit && end_bit <= 8);
+        (((1_u16 << end_bit) - 1) & !((1_u16 << start_bit) - 1)) as u8
+    }
+
+    /// Applies `mask` to one bitmap byte.
+    #[inline(always)]
+    unsafe fn update_bitmap_byte(byte: *mut u8, mask: u8, used: bool) {
+        // SAFETY: callers pass a valid bitmap byte pointer.
+        unsafe {
+            if used {
+                *byte |= mask;
+            } else {
+                *byte &= !mask;
+            }
         }
     }
 
@@ -335,7 +387,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     ///   guarantees that it is a power of two.
     #[inline(always)]
     fn find_free_continuous_memory_region(
-        &mut self,
+        &self,
         chunk_num_request: usize,
         alignment: usize,
     ) -> Result<usize, ChunkAllocatorError> {
@@ -452,9 +504,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     ) {
         let end = index.checked_add(chunk_count).expect("range overflow");
         assert!(end <= self.chunk_count());
-        for chunk_index in index..end {
-            self.mark_chunk_as_used(chunk_index);
-        }
+        self.mark_chunk_range_as_used(index, chunk_count);
         self.chunks_in_use += chunk_count;
     }
 
@@ -471,9 +521,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     ) {
         let end = index.checked_add(chunk_count).expect("range overflow");
         assert!(end <= self.chunk_count());
-        for chunk_index in index..end {
-            self.mark_chunk_as_free(chunk_index);
-        }
+        self.mark_chunk_range_as_free(index, chunk_count);
         self.chunks_in_use -= chunk_count;
     }
 
@@ -582,9 +630,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         // unwrap or return error
         let index = index?;
 
-        for i in index..index + required_chunks {
-            self.mark_chunk_as_used(i);
-        }
+        self.mark_chunk_range_as_used(index, required_chunks);
         self.chunks_in_use += required_chunks;
 
         // Only update "maybe_next_free_chunk" if it doesn't already point to a
@@ -634,9 +680,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
 
         // SAFETY: callers must pass a pointer returned by this allocator.
         let index = unsafe { self.ptr_to_chunk_index(ptr.as_ptr()) };
-        for i in index..index + freed_chunks {
-            self.mark_chunk_as_free(i);
-        }
+        self.mark_chunk_range_as_free(index, freed_chunks);
         self.chunks_in_use -= freed_chunks;
 
         // This helps the next allocation to be faster because we know that this
@@ -698,11 +742,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
                 // SAFETY: callers provide a live allocation from this
                 // allocator.
                 let index = unsafe { self.ptr_to_chunk_index(ptr.as_ptr()) };
-                for chunk_index in
-                    index + required_new_chunks..index + required_chunks
-                {
-                    self.mark_chunk_as_free(chunk_index);
-                }
+                self.mark_chunk_range_as_free(
+                    index + required_new_chunks,
+                    required_chunks - required_new_chunks,
+                );
                 self.chunks_in_use -= required_chunks - required_new_chunks;
             }
             log::trace!("realloc fast return possible!");
@@ -1082,6 +1125,28 @@ mod tests {
         assert!(!alloc.chunk_is_free(5));
     }
 
+    #[test]
+    fn test_mark_chunk_range_crosses_bitmap_bytes() {
+        let (mut heap, mut heap_bitmap) =
+            helpers::create_heap_and_bitmap_vectors();
+        let mut alloc: ChunkAllocator =
+            ChunkAllocator::new(&mut heap, &mut heap_bitmap).unwrap();
+
+        alloc.mark_chunk_range_as_used(3, 14);
+        for index in 0..32 {
+            assert_eq!(
+                !(3..17).contains(&index),
+                alloc.chunk_is_free(index),
+                "unexpected state for chunk {index}"
+            );
+        }
+
+        alloc.mark_chunk_range_as_free(3, 14);
+        for index in 0..32 {
+            assert!(alloc.chunk_is_free(index));
+        }
+    }
+
     /// Tests the `chunk_index_to_ptr` method.
     #[test]
     fn test_chunk_index_to_ptr() {
@@ -1123,7 +1188,7 @@ mod tests {
             0,
             alloc.find_free_continuous_memory_region(1, 4096).unwrap()
         );
-        alloc.mark_chunk_as_used(0);
+        alloc.mark_chunk_range_as_used(0, 1);
         alloc.maybe_next_free_chunk =
             ChunkCacheEntry::new(1, DEFAULT_CHUNK_SIZE, 1);
 
@@ -1136,7 +1201,7 @@ mod tests {
             16,
             alloc.find_free_continuous_memory_region(1, 4096).unwrap()
         );
-        alloc.mark_chunk_as_used(16);
+        alloc.mark_chunk_range_as_used(16, 1);
         // makes sure the next search
         alloc.maybe_next_free_chunk =
             ChunkCacheEntry::new(17, DEFAULT_CHUNK_SIZE, 1);
@@ -1148,7 +1213,7 @@ mod tests {
 
         // now free the first chunk again, which enables a further 4096 byte
         // aligned allocation
-        alloc.mark_chunk_as_free(0);
+        alloc.mark_chunk_range_as_free(0, 1);
         assert_eq!(
             0,
             alloc.find_free_continuous_memory_region(1, 4096).unwrap()
@@ -1179,7 +1244,7 @@ mod tests {
         assert!(res.is_ok());
         assert_eq!(0, res.unwrap());
         for i in 0..32 {
-            alloc.mark_chunk_as_used(i);
+            alloc.mark_chunk_range_as_used(i, 1);
         }
 
         assert!(
@@ -1189,12 +1254,12 @@ mod tests {
 
         // free first 16 chunks; claim again
         for i in 16..32 {
-            alloc.mark_chunk_as_free(i);
+            alloc.mark_chunk_range_as_free(i, 1);
         }
         let res = alloc.find_free_continuous_memory_region(16, 4096);
         assert_eq!(16, res.unwrap());
         for i in 16..32 {
-            alloc.mark_chunk_as_used(i);
+            alloc.mark_chunk_range_as_used(i, 1);
         }
     }
 
@@ -1212,10 +1277,10 @@ mod tests {
         assert_eq!(alloc.chunk_size(), DEFAULT_CHUNK_SIZE);
         assert_eq!(alloc.chunk_count(), 32);
 
-        alloc.mark_chunk_as_used(0);
-        alloc.mark_chunk_as_used(1);
-        alloc.mark_chunk_as_used(2);
-        alloc.mark_chunk_as_used(16);
+        alloc.mark_chunk_range_as_used(0, 1);
+        alloc.mark_chunk_range_as_used(1, 1);
+        alloc.mark_chunk_range_as_used(2, 1);
+        alloc.mark_chunk_range_as_used(16, 1);
 
         assert!(
             alloc.find_free_continuous_memory_region(1, 4096).is_err(),
@@ -1233,8 +1298,7 @@ mod tests {
             helpers::create_heap_and_bitmap_vectors();
         let heap = &mut heap[DEFAULT_CHUNK_SIZE..DEFAULT_CHUNK_SIZE * 17];
         let bitmap = &mut heap_bitmap[..2];
-        let mut alloc: ChunkAllocator =
-            ChunkAllocator::new(heap, bitmap).unwrap();
+        let alloc: ChunkAllocator = ChunkAllocator::new(heap, bitmap).unwrap();
 
         assert_eq!(
             15,

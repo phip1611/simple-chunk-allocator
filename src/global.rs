@@ -222,7 +222,7 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator
     ) -> Result<NonNull<[u8]>, AllocError> {
         assert!(
             old_layout.align() >= new_layout.align(),
-            "change of alignment currenly not supported"
+            "change of alignment currently not supported"
         );
         let mut this = self.0.0.lock();
         // SAFETY: `Allocator::grow` requires a valid allocation from `self`.

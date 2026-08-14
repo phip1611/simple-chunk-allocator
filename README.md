@@ -158,7 +158,7 @@ The default CHUNK_SIZE is 256 bytes. It is a tradeoff between performance and ef
 
 I executed my example `bench` in release mode on an Intel i7-1165G7 CPU and a
 heap of `160MB` to get the results listed below. I used `RUSTFLAGS="-C
-target-cpu=native" cargo run --release --example bench` to excute the benchmark
+target-cpu=native" cargo run --release --example bench` to execute the benchmark
 with maximum performance. The benchmark simulates a heavy usage of the heap in
 a single-threaded program with many random allocations and deallocations. The
 benchmark stops when the heap is close to 100%. The allocations vary in their
@@ -201,17 +201,17 @@ I could find on crates.io.
 
 **Advantages of my chunk allocator:**
 - much faster median allocation time
-- much faster average allocation time [ONLY IF HEAP IS NOT CLOSE TO BEEING FULL]
+- much faster average allocation time [ONLY IF HEAP IS NOT CLOSE TO BEING FULL]
 - optimized realloc in certain cases (almost a no-op in some situations)
 - uses relatively easy algorithm (but needs dedicated heap and book-keeping backing storage)
 
 **Advantages of *linked-list-allocator*:**
 - better memory utilization (less fragmentation)
 - better worst-case allocation time in most test runs
-- better average allocation time [ONLY IF HEAP IS CLOSE TO BEEING FULL]
+- better average allocation time [ONLY IF HEAP IS CLOSE TO BEING FULL]
 - only needs a single chunk of memory and manages the heap with the backing-memory itself
 
-**Benchmark Comparision**: I ran `$ cargo run --example bench --release`
+**Benchmark Comparison**: I ran `$ cargo run --example bench --release`
 against both allocators and obtained the following results. The benchmark
 performs random allocations of different sizes and alignments and also
 deallocates some of the older allocations. Over time, the heap becomes full,
@@ -244,4 +244,4 @@ RESULTS OF BENCHMARK: Linked List Allocator
 We see that when the heap is almost full, the chunk allocator has a faster
 median performance but a worse worst-case allocation time. The linked list
 allocator performs better on average (but not on median) when it is close to
-beeing full.
+being full.

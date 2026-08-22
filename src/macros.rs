@@ -23,21 +23,17 @@ SOFTWARE.
 */
 //! Module for macros `heap!` and `heap_bitmap!`.
 
-/// Helper macro that initializes a page-aligned static memory area with a
-/// correct size to get used as heap in [`crate::GlobalChunkAllocator`].
+/// Creates page-aligned heap storage for [`crate::GlobalChunkAllocator`].
 ///
 /// # Example
 /// ```rust
 /// use simple_chunk_allocator::heap;
 ///
-/// // chunk size: 256; chunk amount: 16
-/// let heap = heap!(chunks = 256, chunksize = 16);
+/// let heap = heap!(chunks = 16, chunksize = 256);
 ///
 /// const CHUNK_SIZE: usize = 256;
 /// const CHUNK_AMOUNT: usize = 24;
 /// let heap = heap!(chunks = CHUNK_AMOUNT, chunksize = CHUNK_SIZE);
-/// let heap = heap!(chunks = 24, chunksize = CHUNK_SIZE);
-/// let heap = heap!(chunks = CHUNK_AMOUNT, chunksize = 256);
 /// ```
 #[macro_export]
 macro_rules! heap {
@@ -73,15 +69,12 @@ macro_rules! heap {
     };
 }
 
-/// Helper macro that initializes a page-aligned static memory area with a
-/// correct size to get used as heap bookkeeping bitmap in
-/// [`crate::GlobalChunkAllocator`].
+/// Creates page-aligned bitmap storage for [`crate::GlobalChunkAllocator`].
 ///
 /// # Example
 /// ```rust
 /// use simple_chunk_allocator::heap_bitmap;
 ///
-/// // chunk size: 256; chunk amount: 16
 /// let heap_bitmap = heap_bitmap!(chunks = 16);
 ///
 /// const CHUNK_AMOUNT: usize = 24;

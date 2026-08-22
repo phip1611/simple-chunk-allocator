@@ -42,41 +42,26 @@ macro_rules! normalize_layout {
     };
 }
 
-/// Possible errors of [`ChunkAllocator`].
+/// Errors returned when creating or allocating from a [`ChunkAllocator`].
 #[derive(Debug, Copy, Clone)]
 pub enum ChunkAllocatorError {
-    /// The backing memory for the heap must be
-    /// - not empty
-    /// - an multiple of the used chunk size that is a multiple of 8, and
-    /// - not start at 0
-    /// - be aligned to the chunk size.
+    /// The heap is empty, misaligned, or has an incompatible length.
     BadHeapMemory,
-    /// The number of bits in the backing memory for the heap bitmap
-    /// must match the number of chunks in the heap.
+    /// The bitmap does not contain exactly one bit per heap chunk.
     BadBitmapMemory,
-    /// The chunk size must be not 0 and a power of 2.
+    /// The chunk size is zero or not a power of two.
     BadChunkSize,
-    /// The heap is either completely full or to fragmented to serve
-    /// the request. Also, it may happen that the alignment can't get
-    /// guaranteed, because all aligned chunks are already in use.
+    /// No free, suitably aligned run of chunks can satisfy the request.
     OutOfMemory,
 }
 
-/// Default chunk size used by [`ChunkAllocator`]. 256 Bytes is a trade-off
-/// between fast allocations and efficient memory usage. However, small
-/// allocations will take up at least this amount if bytes.
+/// Default chunk size: 256 bytes.
 pub const DEFAULT_CHUNK_SIZE: usize = 256;
 
-/// Low-level chunk allocator that operates on the provided backing memory.
-/// Allocates memory with a variant of the strategies next-fit and best-fit.
+/// Allocates from caller-provided storage in fixed-size chunks.
 ///
-/// The default chunk size is [`DEFAULT_CHUNK_SIZE`]. A large chunk size has the
-/// negative impact that small allocations will consume at least one chunk. A
-/// small chunk size has the negative impact that the allocation may take
-/// slightly longer.
-///
-/// As this allocator may allocate more memory than required (because of the
-/// chunk size), realloc/grow operations are no-ops in certain cases.
+/// Each allocation consumes whole chunks. A larger chunk size reduces bitmap
+/// size and search work; a smaller size reduces internal fragmentation.
 #[derive(Debug)]
 pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Backing memory for heap.
@@ -125,22 +110,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         CHUNK_SIZE
     }
 
-    /// Creates a new allocator object. Verifies that the provided memory has
-    /// the correct properties. Zeroes the bitmap.
+    /// Creates an allocator and validates the backing storage.
     ///
-    /// - heap length must be a multiple of `CHUNK_SIZE`
-    /// - the heap must be not empty
-    /// - the bitmap must match the number of chunks
-    /// - the heap must be at least aligned to CHUNK_SIZE.
-    ///
-    /// It is recommended that the heap and the bitmap both start at
-    /// page-aligned addresses for better performance and to enable a faster
-    /// search for correctly aligned addresses.
-    ///
-    /// WARNING: During const initialization it is not possible to check the
-    /// alignment of the provided buffer. Please make sure that the data is
-    /// at least aligned to the chunk_size. The recommended alignment is
-    /// page-alignment.
+    /// The heap must be non-empty, `CHUNK_SIZE`-aligned, and contain a multiple
+    /// of eight chunks. The bitmap must have exactly one bit per chunk.
     #[inline]
     pub fn new(
         heap: &'a mut [u8],
@@ -196,16 +169,10 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         })
     }
 
-    /// Version of [`Self::new`] that panics instead of returning a result.
-    /// Useful for globally static const contexts. The panic will happen
-    /// during compile time and not during run time. [`Self::new`] can't be
-    /// used in such scenarios because `unwrap()` on the Result is not a
-    /// const function (yet).
+    /// Const variant of [`Self::new`] that panics for invalid sizes.
     ///
-    /// WARNING: During const initialization it is not possible to check the
-    /// alignment of the provided buffer. Please make sure that the data is
-    /// at least aligned to the chunk_size. The recommended alignment is
-    /// page-alignment.
+    /// Alignment is checked on the first allocation because it cannot be
+    /// checked during const evaluation.
     #[inline]
     pub const fn new_const(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
         assert!(CHUNK_SIZE > 0, "chunk size must not be zero!");
@@ -252,11 +219,13 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
     }
 
-    /// Creates an allocator from raw backing-memory slices in a const context.
+    /// Creates an allocator from raw backing-memory slices in const contexts.
     ///
     /// # Safety
-    /// The pointers must be valid, non-null, uniquely owned slices for the
-    /// lifetime `'a`.
+    /// `heap` and `bitmap` must be valid, non-null, non-overlapping mutable
+    /// slices for `'a`. The caller must give this allocator exclusive access to
+    /// both regions for `'a`. Their sizes and heap alignment must meet
+    /// [`Self::new`] requirements.
     #[inline]
     pub const unsafe fn new_raw(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
         // SAFETY: required validity and exclusivity are guaranteed by the
@@ -582,10 +551,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         ))
     }
 
-    /// Deallocates the given pointer.
+    /// Deallocates an allocation from this allocator.
     ///
     /// # Safety
-    /// Unsafe if memory gets de-allocated that is still in use.
+    /// `ptr` must be a live allocation returned by this allocator for `layout`.
+    /// It must be deallocated exactly once and not used afterwards.
     #[track_caller]
     #[inline]
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
@@ -631,12 +601,11 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         }
     }
 
-    /// Reallocs the memory. This might be a cheap operation if the new size is
-    /// still smaller or equal to the chunk size. Otherwise, this falls back
-    /// to the default implementation of the Global allocator from Rust.
+    /// Resizes an allocation from this allocator.
     ///
     /// # Safety
-    /// Unsafe if memory gets de-allocated that is still in use.
+    /// `ptr` must be a live allocation returned by this allocator for
+    /// `old_layout`. The caller must not use `ptr` after a successful move.
     #[track_caller]
     #[inline]
     pub unsafe fn realloc(
@@ -655,8 +624,26 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         let required_chunks = self.calc_required_chunks(old_layout.size());
         let occupied_size = required_chunks * CHUNK_SIZE;
 
-        // fast return: reuse existing allocation as it is big enough
+        // Reuse the allocation when it already has enough space.
         if new_size <= occupied_size {
+            // `max(1)`: a shrink to zero keeps the allocation alive, and
+            // `normalize_layout!` will report one chunk on the matching
+            // deallocation.
+            let required_new_chunks =
+                self.calc_required_chunks(new_size.max(1));
+            if required_new_chunks < required_chunks {
+                // SAFETY: callers provide a live allocation from this
+                // allocator.
+                let index = unsafe { self.ptr_to_chunk_index(ptr.as_ptr()) };
+                // The allocation keeps its leading `required_new_chunks`
+                // chunks; the chunks behind them become free again.
+                let begin = index + required_new_chunks;
+                let end = index + required_chunks;
+                for chunk_index in begin..end {
+                    self.mark_chunk_as_free(chunk_index);
+                }
+                self.chunks_in_use -= end - begin;
+            }
             log::trace!("realloc fast return possible!");
             Ok(NonNull::slice_from_raw_parts(ptr, new_size))
         } else {
@@ -768,6 +755,80 @@ mod tests {
             );
 
             (heap, heap_bitmap)
+        }
+
+        pub fn create_heap_and_bitmap_vectors_for<const CHUNK_SIZE: usize>(
+            chunk_count: usize,
+        ) -> (
+            Vec<u8, GlobalPageAlignedAlloc>,
+            Vec<u8, GlobalPageAlignedAlloc>,
+        ) {
+            assert!(chunk_count.is_multiple_of(8));
+            let heap_size = CHUNK_SIZE * chunk_count;
+            let mut heap =
+                Vec::with_capacity_in(heap_size, GlobalPageAlignedAlloc);
+            heap.resize(heap_size, 0);
+            let mut bitmap =
+                Vec::with_capacity_in(chunk_count / 8, GlobalPageAlignedAlloc);
+            bitmap.resize(chunk_count / 8, 0);
+            assert_eq!(heap.as_ptr().align_offset(CHUNK_SIZE), 0);
+            (heap, bitmap)
+        }
+
+        /// A live allocation together with the layout it was created for and
+        /// a byte pattern that marks it.
+        ///
+        /// Giving each allocation its own pattern turns two allocations that
+        /// overlap in the heap into a failed assertion: the second [`fill`]
+        /// overwrites the first pattern, and the next [`assert_pattern`] of
+        /// the older allocation sees the foreign bytes.
+        ///
+        /// [`fill`]: Self::fill
+        /// [`assert_pattern`]: Self::assert_pattern
+        #[derive(Debug)]
+        pub struct Allocation {
+            pub ptr: NonNull<u8>,
+            pub layout: Layout,
+            pub pattern: u8,
+        }
+
+        impl Allocation {
+            /// Writes the pattern over the whole allocation.
+            pub fn fill(&self) {
+                // SAFETY: `ptr` names a live allocation of `layout.size()`
+                // bytes.
+                unsafe {
+                    core::ptr::write_bytes(
+                        self.ptr.as_ptr(),
+                        self.pattern,
+                        self.layout.size(),
+                    )
+                };
+            }
+
+            /// Asserts that the first `len` bytes still carry the pattern.
+            ///
+            /// `len` is a parameter because a caller may know the pattern for
+            /// fewer bytes than the allocation currently holds. After a
+            /// growing realloc, for example, only the bytes copied from the
+            /// old allocation carry it, while the rest is uninitialized and
+            /// must not be read.
+            pub fn assert_pattern(&self, len: usize) {
+                assert!(
+                    len <= self.layout.size(),
+                    "cannot check more bytes than the allocation holds"
+                );
+                // SAFETY: `len` is within the live allocation, and the bytes
+                // were initialized by `fill`.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(self.ptr.as_ptr(), len)
+                };
+                assert!(
+                    bytes.iter().all(|byte| *byte == self.pattern),
+                    "allocation lost its pattern {:#x}",
+                    self.pattern
+                );
+            }
         }
     }
 
@@ -1129,5 +1190,215 @@ mod tests {
             17,
             alloc.find_free_continuous_memory_region(15, 1).unwrap(),
         );
+    }
+
+    #[test]
+    fn test_allocate_respects_boundaries_and_reuses_chunks() {
+        let (mut heap, mut bitmap) =
+            helpers::create_heap_and_bitmap_vectors_for::<256>(8);
+        let mut allocator =
+            ChunkAllocator::<256>::new(&mut heap, &mut bitmap).unwrap();
+        let layout = Layout::from_size_align(256, 1).unwrap();
+        let mut allocations = Vec::new();
+
+        for _ in 0..8 {
+            allocations.push(allocator.allocate(layout).unwrap());
+        }
+        assert!(matches!(
+            allocator.allocate(layout),
+            Err(ChunkAllocatorError::OutOfMemory)
+        ));
+        assert_eq!(allocator.usage(), 100.0);
+
+        let ptr = allocations.pop().unwrap().cast();
+        // SAFETY: `ptr` is the most recent live allocation for `layout`.
+        unsafe { allocator.deallocate(ptr, layout) };
+        assert!(allocator.allocate(layout).is_ok());
+    }
+
+    #[test]
+    fn test_allocate_honors_requested_alignment() {
+        let (mut heap, mut bitmap) =
+            helpers::create_heap_and_bitmap_vectors_for::<256>(64);
+        let mut allocator =
+            ChunkAllocator::<256>::new(&mut heap, &mut bitmap).unwrap();
+        let mut allocations = Vec::new();
+
+        for alignment in
+            [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+        {
+            let layout = Layout::from_size_align(1, alignment).unwrap();
+            let allocation = allocator.allocate(layout).unwrap();
+            assert_eq!(
+                allocation.as_ptr().cast::<u8>().align_offset(alignment),
+                0,
+                "allocation for alignment {alignment} is misaligned"
+            );
+            allocations.push((allocation.cast(), layout));
+        }
+
+        for (ptr, layout) in allocations {
+            // SAFETY: each pointer is live and paired with its original layout.
+            unsafe { allocator.deallocate(ptr, layout) };
+        }
+        assert_eq!(allocator.usage(), 0.0);
+    }
+
+    /// Follows one allocation through grow and shrink and checks the chunk
+    /// bookkeeping after every step. The heap has 16 chunks, so every expected
+    /// usage below is `chunks_in_use / 16`.
+    #[test]
+    fn test_realloc_preserves_data_and_releases_chunks() {
+        let (mut heap, mut bitmap) =
+            helpers::create_heap_and_bitmap_vectors_for::<256>(16);
+        let mut allocator =
+            ChunkAllocator::<256>::new(&mut heap, &mut bitmap).unwrap();
+        let old_layout = Layout::from_size_align(128, 64).unwrap();
+        let allocation = allocator.allocate(old_layout).unwrap();
+        let record = helpers::Allocation {
+            ptr: allocation.cast(),
+            layout: old_layout,
+            pattern: 0xa5,
+        };
+        record.fill();
+        // 128 byte occupy a single chunk.
+        assert_eq!(allocator.usage(), 6.25);
+
+        // 600 byte do not fit into the occupied chunk, so this moves the
+        // allocation to a region of three chunks and frees the old one.
+        // SAFETY: `record` describes a live allocation from `allocator`.
+        let grown =
+            unsafe { allocator.realloc(record.ptr, old_layout, 600) }.unwrap();
+        let grown_layout = Layout::from_size_align(600, 64).unwrap();
+        let grown_record = helpers::Allocation {
+            ptr: grown.cast(),
+            layout: grown_layout,
+            pattern: record.pattern,
+        };
+        // Only the 128 byte copied from the old allocation are known to
+        // carry the pattern. The remaining bytes of the larger allocation are
+        // uninitialized, so the check stops at the old size.
+        grown_record.assert_pattern(old_layout.size());
+        assert_eq!(allocator.usage(), 18.75);
+
+        // Shrinking stays in place, but the two chunks that are no longer
+        // backed by the allocation must be released here. Before, they stayed
+        // marked as used until the process ended.
+        // SAFETY: `grown_record` describes the live replacement allocation.
+        let zero =
+            unsafe { allocator.realloc(grown_record.ptr, grown_layout, 0) }
+                .unwrap();
+        assert_eq!(zero.len(), 0);
+        // A zero-size allocation still owns one chunk; see `normalize_layout!`.
+        assert_eq!(allocator.usage(), 6.25);
+
+        let zero_layout = Layout::from_size_align(0, 1).unwrap();
+        // SAFETY: the zero-size result retains the same live allocation.
+        unsafe { allocator.deallocate(zero.cast(), zero_layout) };
+        assert_eq!(allocator.usage(), 0.0);
+    }
+
+    /// Drives allocate, deallocate and realloc in an order that the
+    /// hand-written tests do not reach: they check one operation at a time on
+    /// an otherwise fresh heap, while the bugs of a bitmap allocator show up
+    /// after the heap has become fragmented and the free-chunk hint points
+    /// somewhere in the middle.
+    ///
+    /// Two invariants carry the test. Every allocation is filled with its own
+    /// pattern and re-checked before it is touched again, so any overlap
+    /// between two live allocations fails here instead of corrupting data
+    /// silently. And after everything is freed, `usage` must be back at zero,
+    /// so a chunk that is never released fails the test as well.
+    ///
+    /// The sequence comes from a fixed seed rather than a random one: a
+    /// failure is reproducible and bisectable, which a randomised run would
+    /// not be. The step count is reduced under Miri, which needs roughly three
+    /// orders of magnitude more time per step.
+    #[test]
+    fn test_deterministic_allocation_lifecycle() {
+        #[cfg(miri)]
+        const STEPS: usize = 64;
+        #[cfg(not(miri))]
+        const STEPS: usize = 512;
+        let (mut heap, mut bitmap) =
+            helpers::create_heap_and_bitmap_vectors_for::<256>(64);
+        let mut allocator =
+            ChunkAllocator::<256>::new(&mut heap, &mut bitmap).unwrap();
+        let mut seed = 0x5eed_u64;
+        let mut live: Vec<helpers::Allocation> = Vec::new();
+
+        for step in 0..STEPS {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let index = (seed as usize) % live.len().max(1);
+            match (seed >> 32) % 3 {
+                0 if !live.is_empty() => {
+                    let allocation = live.swap_remove(index);
+                    allocation.assert_pattern(allocation.layout.size());
+                    // SAFETY: the record retains the original live allocation
+                    // and layout.
+                    unsafe {
+                        allocator.deallocate(allocation.ptr, allocation.layout)
+                    };
+                }
+                1 if !live.is_empty() => {
+                    let mut allocation = live.swap_remove(index);
+                    allocation.assert_pattern(allocation.layout.size());
+                    let new_size = ((seed >> 8) as usize % 700) + 1;
+                    // SAFETY: the record retains the original live allocation
+                    // and layout.
+                    match unsafe {
+                        allocator.realloc(
+                            allocation.ptr,
+                            allocation.layout,
+                            new_size,
+                        )
+                    } {
+                        Ok(ptr) => {
+                            let preserved =
+                                allocation.layout.size().min(new_size);
+                            allocation.ptr = ptr.cast();
+                            allocation.layout = Layout::from_size_align(
+                                new_size,
+                                allocation.layout.align(),
+                            )
+                            .unwrap();
+                            allocation.assert_pattern(preserved);
+                            allocation.fill();
+                            live.push(allocation);
+                        }
+                        Err(ChunkAllocatorError::OutOfMemory) => {
+                            live.push(allocation)
+                        }
+                        Err(error) => {
+                            panic!("unexpected realloc error: {error:?}")
+                        }
+                    }
+                }
+                _ => {
+                    let size = ((seed >> 8) as usize % 700) + 1;
+                    let alignment =
+                        [1, 2, 4, 8, 16, 32, 64, 128, 256][(seed as usize) % 9];
+                    let layout =
+                        Layout::from_size_align(size, alignment).unwrap();
+                    if let Ok(ptr) = allocator.allocate(layout) {
+                        let allocation = helpers::Allocation {
+                            ptr: ptr.cast(),
+                            layout,
+                            pattern: step as u8,
+                        };
+                        allocation.fill();
+                        live.push(allocation);
+                    }
+                }
+            }
+        }
+
+        for allocation in live {
+            allocation.assert_pattern(allocation.layout.size());
+            // SAFETY: every remaining record is a live allocation with its
+            // layout.
+            unsafe { allocator.deallocate(allocation.ptr, allocation.layout) };
+        }
+        assert_eq!(allocator.usage(), 0.0);
     }
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- All UB fixed.
+- Fixed some bugs
+- Improved documentation
+
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it
 only as learning resource or so. The library contains a few cases that produce

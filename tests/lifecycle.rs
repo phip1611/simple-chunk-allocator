@@ -366,6 +366,83 @@ fn over_aligned_allocations_do_not_need_an_over_aligned_region() {
     }
 }
 
+/// A grow that cannot be satisfied has to leave the original allocation
+/// exactly as it was.
+///
+/// This is where an allocator loses memory: releasing the old chunks before
+/// the new ones are secured leaks them, and a half-updated allocation hands
+/// the caller a pointer to memory it no longer owns.
+#[test]
+fn a_failed_grow_leaves_the_original_allocation_alone() {
+    const CHUNKS: usize = 8;
+    let mut backing = Region::for_chunks::<CHUNK_SIZE>(CHUNKS);
+    // SAFETY: `backing` outlives the allocator and is not used meanwhile.
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
+    let layout = Layout::from_size_align(CHUNK_SIZE, 1).unwrap();
+
+    let record = Allocation {
+        ptr: allocator.allocate(layout).unwrap().cast(),
+        layout,
+        pattern: 0x5a,
+    };
+    record.fill();
+    // Occupy the rest, so that there is nowhere to move the allocation to.
+    let rest: Vec<_> = (1..CHUNKS)
+        .map(|_| allocator.allocate(layout).unwrap().cast())
+        .collect();
+    assert_eq!(allocator.usage(), 1.0);
+
+    // SAFETY: `record` is a live allocation from `allocator`. `realloc` only
+    // consumes the pointer when it succeeds, and this call cannot.
+    let failed =
+        unsafe { allocator.realloc(record.ptr, layout, CHUNK_SIZE * 2) };
+    assert_eq!(failed.unwrap_err(), OutOfMemory);
+    record.assert_pattern(layout.size());
+    assert_eq!(
+        allocator.usage(),
+        1.0,
+        "a failed grow must not change the bookkeeping"
+    );
+
+    // Still exactly one chunk, so freeing it releases exactly one.
+    // SAFETY: `record` is still the live allocation for `layout`.
+    unsafe { allocator.deallocate(record.ptr, layout) };
+    assert_eq!(allocator.usage(), (CHUNKS - 1) as f32 / CHUNKS as f32);
+
+    for ptr in rest {
+        // SAFETY: each pointer is live and was allocated for `layout`.
+        unsafe { allocator.deallocate(ptr, layout) };
+    }
+    assert_eq!(allocator.usage(), 0.0);
+}
+
+/// The `Allocator` documentation permits zero-sized requests. A chunk
+/// allocator cannot hand out nothing, so it charges a whole chunk - and two
+/// such allocations must still not share one.
+#[test]
+fn zero_sized_allocations_occupy_a_chunk_of_their_own() {
+    const CHUNKS: usize = 8;
+    let mut backing = Region::for_chunks::<CHUNK_SIZE>(CHUNKS);
+    // SAFETY: `backing` outlives the allocator and is not used meanwhile.
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
+    let layout = Layout::from_size_align(0, 1).unwrap();
+
+    let first = allocator.allocate(layout).unwrap().cast::<u8>();
+    assert_eq!(allocator.usage(), 1.0 / CHUNKS as f32);
+    let second = allocator.allocate(layout).unwrap().cast::<u8>();
+    assert_ne!(first, second, "two live allocations share a chunk");
+    assert_eq!(allocator.usage(), 2.0 / CHUNKS as f32);
+
+    // SAFETY: both are live allocations made for `layout`.
+    unsafe {
+        allocator.deallocate(first, layout);
+        allocator.deallocate(second, layout);
+    }
+    assert_eq!(allocator.usage(), 0.0);
+}
+
 /// Drives allocate, deallocate and realloc in an order that the hand-written
 /// tests do not reach: they check one operation at a time on an otherwise
 /// fresh heap, while the bugs of a bitmap allocator show up after the heap has

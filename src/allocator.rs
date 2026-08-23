@@ -829,6 +829,54 @@ mod tests {
         }
     }
 
+    /// `chunks_in_use` is a counter kept alongside the bitmap, so the two are
+    /// separate records of the same fact and can drift apart. Only the
+    /// counter is observable from outside, through `usage`, so a path that
+    /// updates one and not the other passes every test that looks at `usage`
+    /// alone.
+    #[test]
+    fn test_chunks_in_use_matches_the_bitmap() {
+        const CS: usize = 256;
+
+        fn marked_chunks(alloc: &ChunkAllocator<CS>) -> usize {
+            (0..alloc.chunk_count())
+                .filter(|index| !alloc.chunk_is_free(*index))
+                .count()
+        }
+
+        let mut backing = helpers::Region::for_chunks::<CS>(32);
+        let mut alloc = helpers::allocator_over::<CS>(backing.as_mut_slice());
+        let layout = Layout::from_size_align(CS * 3, 1).unwrap();
+
+        let first = alloc.allocate(layout).unwrap().cast();
+        let second = alloc.allocate(layout).unwrap().cast();
+        assert_eq!(marked_chunks(&alloc), alloc.chunks_in_use);
+
+        // A shrink releases chunks without going through `deallocate`.
+        // SAFETY: `first` is live and was allocated for `layout`.
+        let shrunk = unsafe { alloc.realloc(first, layout, CS) }.unwrap();
+        assert_eq!(marked_chunks(&alloc), alloc.chunks_in_use);
+
+        // A grow that does not fit in place allocates, copies and frees.
+        // SAFETY: `second` is live and was allocated for `layout`.
+        let grown = unsafe { alloc.realloc(second, layout, CS * 6) }.unwrap();
+        assert_eq!(marked_chunks(&alloc), alloc.chunks_in_use);
+
+        // SAFETY: both pointers are live and paired with their layouts.
+        unsafe {
+            alloc.deallocate(
+                shrunk.cast(),
+                Layout::from_size_align(CS, 1).unwrap(),
+            );
+            alloc.deallocate(
+                grown.cast(),
+                Layout::from_size_align(CS * 6, 1).unwrap(),
+            );
+        }
+        assert_eq!(marked_chunks(&alloc), alloc.chunks_in_use);
+        assert_eq!(alloc.chunks_in_use, 0);
+    }
+
     /// Tests the method `chunk_index_to_bitmap_indices()`.
     #[test]
     fn test_chunk_index_to_bitmap_indices() {

@@ -65,11 +65,13 @@ impl ChunkCacheEntry {
         self.index
     }
 
+    #[expect(dead_code, reason = "the entry is about to become a plain index")]
     #[inline(always)]
     pub const fn alignment(&self) -> usize {
         self.alignment
     }
 
+    #[expect(dead_code, reason = "the entry is about to become a plain index")]
     #[inline(always)]
     pub const fn chunk_count(&self) -> usize {
         self.chunk_count

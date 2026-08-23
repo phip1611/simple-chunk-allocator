@@ -39,7 +39,7 @@ SOFTWARE.
 //! - ✅ `no_std` allocator with test coverage
 //! - ✅ uses a single caller-provided region as backing storage (no paging/page
 //!   table manipulations)
-//! - ✅ allocation strategy is a combination of next-fit and best-fit
+//! - ✅ next-fit allocation that reuses the most recently freed region first
 //! - ✅ reasonably fast with low code complexity
 //! - ✅ const compatibility (no runtime `init()` required)
 //! - ✅ efficient in scenarios where the heap is a few dozen megabytes in size
@@ -89,14 +89,15 @@ SOFTWARE.
 //! chunks. Small allocations thus occupy a whole chunk, which is the price for
 //! keeping the bookkeeping at a single bit per chunk.
 //!
-//! The search for those chunks starts at a cached hint and takes the first run
-//! that is long enough and whose start address satisfies the requested
-//! alignment (next-fit). Chunks start at `CHUNK_SIZE`-aligned addresses, so
-//! alignments up to the chunk size always fit; larger alignments make the
-//! search skip candidates. Deallocation moves the hint to the freed region
-//! when that region is smaller than the cached one, which biases the next
-//! allocation towards the smallest recent gap (best-fit) and slows down
-//! fragmentation.
+//! The search starts at a hint and takes the first run that is long enough
+//! and whose start address satisfies the requested alignment (next-fit).
+//! Chunks start at `CHUNK_SIZE`-aligned addresses, so alignments up to the
+//! chunk size always fit; a larger one is met by every
+//! `alignment / CHUNK_SIZE`-th chunk.
+//!
+//! Deallocation points the hint at the freed region, so a buffer allocated
+//! and freed over and over is handed back the memory it just released
+//! instead of being searched for.
 //!
 //! Everything needed to build an allocator is `const`, so the allocator and
 //! its backing memory can be set up at compile time and need no runtime

@@ -11,7 +11,7 @@ binaries.
 - ✅ `no_std` allocator with test coverage
 - ✅ uses one caller-provided region as backing storage (no paging/page table
   manipulations)
-- ✅ allocation strategy is a combination of next-fit and best-fit
+- ✅ next-fit allocation that reuses the most recently freed region first
 - ✅ reasonably fast with low code complexity
 - ✅ const compatibility (no runtime `init()` required)
 - ✅ efficient in scenarios where the heap is a few dozen megabytes in size

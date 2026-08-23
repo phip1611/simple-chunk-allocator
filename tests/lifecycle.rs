@@ -194,6 +194,37 @@ fn every_chunk_size_carries_a_full_cycle() {
     fill_and_empty_heap::<8192>(3);
 }
 
+/// A freed region becomes the starting point of the next search, so an
+/// allocation of the same shape lands exactly where the old one was.
+///
+/// Without that the search resumes wherever the previous allocation left off
+/// and walks the heap looking for a run it has just been handed back, which is
+/// the expensive way to answer a question the allocator already knew.
+#[test]
+fn a_freed_region_is_handed_out_again_first() {
+    let mut backing = Region::for_chunks::<CHUNK_SIZE>(16);
+    // SAFETY: `backing` outlives the allocator and is not used meanwhile.
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
+    let layout = Layout::from_size_align(CHUNK_SIZE * 4, 1).unwrap();
+
+    let first = allocator.allocate(layout).unwrap().cast::<u8>();
+    let second = allocator.allocate(layout).unwrap().cast::<u8>();
+    assert_ne!(first, second);
+
+    // SAFETY: `first` is live and was allocated for `layout`.
+    unsafe { allocator.deallocate(first, layout) };
+    let reused = allocator.allocate(layout).unwrap().cast::<u8>();
+    assert_eq!(reused, first, "the freed region must be offered again");
+
+    // SAFETY: both pointers are live and were allocated for `layout`.
+    unsafe {
+        allocator.deallocate(second, layout);
+        allocator.deallocate(reused, layout);
+    }
+    assert_eq!(allocator.usage(), 0.0);
+}
+
 /// Allocating many times the heap's size in sequence only works if every
 /// deallocation gives its chunks back. A leak would run out during the loop.
 #[test]

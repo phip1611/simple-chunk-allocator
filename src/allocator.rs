@@ -625,32 +625,12 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         }
         self.chunks_in_use -= freed_chunks;
 
-        // This helps the next allocation to be faster because we know that this
-        // block was just freed. This only works if the next allocation
-        // fits into the continuous region of memory.
-        //
-        // Currently, this prefers the smallest possible continuous region with
-        // the lowest possible alignment which prevents fragmentation at
-        // the cost of larger lookup times. It assumes/hopes the next
-        // allocation only needs as few chunks as possible (ideally a
-        // fitting one).
-        //
-        // Small alignments (1, 2, 4, 8) are common but 4096 (page-alignment) is
-        // rather rare. Therefore, it is okay to try to prevent small
-        // allocations in addresses with big alignment.
-
-        // 1) freed memory region smaller then cached?
-        if freed_chunks < self.maybe_next_free_chunk.chunk_count()
-            // 2) if same size: check alignment
-            || (freed_chunks == self.maybe_next_free_chunk.chunk_count()
-                // The layout alignment is greater than the minimum alignment.
-                // and smaller than the one currently cached
-                && layout.align() > CHUNK_SIZE
-                && layout.align() < self.maybe_next_free_chunk.alignment())
-        {
-            self.maybe_next_free_chunk =
-                ChunkCacheEntry::new(index, layout.align(), freed_chunks);
-        }
+        // Resume the next search where memory just became available.
+        // Allocating and freeing a buffer of the same shape over and over is
+        // the common case, and it only stays cheap if the search starts at the
+        // region that was just released instead of walking the heap again.
+        self.maybe_next_free_chunk =
+            ChunkCacheEntry::new(index, layout.align(), freed_chunks);
     }
 
     /// Resizes an allocation from this allocator.

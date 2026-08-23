@@ -125,11 +125,15 @@ pub struct ChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
 unsafe impl<const CHUNK_SIZE: usize> Send for ChunkAllocator<CHUNK_SIZE> {}
 
 impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
-    /// Rejects an invalid chunk size when the allocator is instantiated.
+    /// Rejects an invalid chunk size when an allocator is built.
     ///
     /// A power of two is what makes every chunk `CHUNK_SIZE`-aligned once the
     /// heap base is. Zero is covered as well, because `0` is not a power of
     /// two.
+    ///
+    /// [`Self::new`] is the only place that needs to evaluate this: it is the
+    /// only way to obtain an allocator, so no invalid chunk size reaches the
+    /// allocating code without passing through it.
     const VALIDATE_CHUNK_SIZE: () = assert!(
         CHUNK_SIZE.is_power_of_two(),
         "CHUNK_SIZE must be a power of two"
@@ -154,11 +158,11 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
 
     /// Creates an allocator over a single caller-provided memory region.
     ///
-    /// The region holds the chunks followed by their bitmap; how many chunks
-    /// fit follows from `region_len` and `CHUNK_SIZE`, so a region of any
-    /// length is accepted. One that cannot hold a single chunk yields an
-    /// allocator with a capacity of zero rather than an error, which is the
-    /// same answer every allocation from it would get anyway.
+    /// The region holds the chunks followed by their bitmap; how many fit
+    /// follows from `region_len` and `CHUNK_SIZE`. Anything below
+    /// [`Self::required_region_size`] for one chunk is rejected: such a region
+    /// could only ever produce an allocator that is out of memory on every
+    /// request.
     ///
     /// The region needs neither a particular alignment nor initialized
     /// content. The allocator aligns the first chunk itself, which makes every
@@ -175,6 +179,11 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
     pub const unsafe fn new(region: *mut u8, region_len: usize) -> Self {
         let () = Self::VALIDATE_CHUNK_SIZE;
 
+        assert!(
+            region_len >= Self::required_region_size(1),
+            "the region must be able to hold at least one chunk"
+        );
+
         Self {
             region: NonNull::new(region)
                 .expect("caller should pass a non-null region"),
@@ -187,6 +196,38 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
             bitmap_is_initialized: false,
             chunks_in_use: 0,
         }
+    }
+
+    /// Returns the region size that holds at least `chunk_count` chunks,
+    /// whatever alignment the region turns out to have.
+    ///
+    /// Sizing backing storage with this is what keeps a caller from silently
+    /// getting fewer chunks than planned.
+    ///
+    /// # Example
+    /// ```rust
+    /// use simple_chunk_allocator::ChunkAllocator;
+    ///
+    /// const SIZE: usize = ChunkAllocator::<256>::required_region_size(64);
+    /// static mut REGION: [u8; SIZE] = [0; SIZE];
+    ///
+    /// // SAFETY: nothing else uses REGION.
+    /// let allocator = unsafe {
+    ///     ChunkAllocator::<256>::new((&raw mut REGION).cast(), SIZE)
+    /// };
+    /// assert!(allocator.chunk_count() >= 64);
+    /// ```
+    #[inline]
+    pub const fn required_region_size(chunk_count: usize) -> usize {
+        let chunks = chunk_count * CHUNK_SIZE;
+        // One bit per chunk, rounded up: the bitmap is addressed in bytes.
+        let bitmap = chunk_count.div_ceil(8);
+        // The allocator skips up to a chunk to align the first one, so an
+        // exactly sized region would come up short unless it happens to be
+        // chunk-aligned.
+        let alignment_padding = CHUNK_SIZE - 1;
+
+        chunks + bitmap + alignment_padding
     }
 
     /// Returns the region layout, deriving it on the first call.
@@ -807,7 +848,7 @@ mod tests {
         let mut backing = helpers::region(16 * 1024, 0xff);
 
         for offset in [0, 1, 7, 63, 64, 65, 4095] {
-            for len in [0, 1, CS, CS + 1, 3 * CS, 1000, 4096, 8191] {
+            for len in [2 * CS, 3 * CS, 1000, 4096, 8191] {
                 let region = &mut backing[offset..offset + len];
                 let alloc = helpers::allocator_over::<CS>(region);
                 let chunks = alloc.chunk_count();
@@ -840,37 +881,35 @@ mod tests {
         }
     }
 
-    /// A region that cannot hold a single chunk is not an error: it produces
-    /// an allocator that is simply always out of memory.
+    /// A region too small for one chunk is a mistake the constructor rejects,
+    /// so a `static` sized wrong fails to compile rather than yielding an
+    /// allocator that is always out of memory.
     #[test]
-    fn test_region_too_small_yields_an_empty_allocator() {
+    fn test_new_rejects_a_region_too_small_for_a_chunk() {
         const CS: usize = 256;
-        let mut backing = helpers::region(CS, 0);
 
-        for len in [0, 1, CS - 1] {
-            let mut alloc = helpers::allocator_over::<CS>(&mut backing[..len]);
-            assert_eq!(alloc.chunk_count(), 0);
-            assert_eq!(alloc.capacity(), 0);
-            assert_eq!(alloc.usage(), 0.0);
-            assert_eq!(
-                alloc.allocate(Layout::from_size_align(1, 1).unwrap()),
-                Err(OutOfMemory)
-            );
+        for len in [0, 1, CS, 2 * CS - 1] {
+            std::panic::catch_unwind(move || {
+                let mut region = std::vec![0_u8; len];
+                let _alloc = helpers::allocator_over::<CS>(&mut region);
+            })
+            .expect_err("region too small for one chunk");
         }
     }
 
-    /// A region of `chunks * CHUNK_SIZE + ceil(chunks / 8) + CHUNK_SIZE - 1`
-    /// bytes must deliver `chunks` chunks no matter where it ends up: the last
-    /// term covers the padding the allocator may skip.
+    /// Sizing backing storage with `required_region_size` must deliver the
+    /// requested chunks no matter where the storage ends up.
     #[test]
-    fn test_a_padded_region_holds_the_chunks_it_was_sized_for() {
+    fn test_required_region_size_covers_every_alignment() {
         const CS: usize = 128;
         let requested = [1, 7, 8, 9, 64];
-        let mut backing =
-            helpers::region(64 * CS + 64_usize.div_ceil(8) + 2 * CS, 0);
+        let mut backing = helpers::region(
+            ChunkAllocator::<CS>::required_region_size(64) + CS,
+            0,
+        );
 
         for chunk_count in requested {
-            let len = chunk_count * CS + chunk_count.div_ceil(8) + (CS - 1);
+            let len = ChunkAllocator::<CS>::required_region_size(chunk_count);
             for offset in [0, 1, CS - 1, CS] {
                 let alloc = helpers::allocator_over::<CS>(
                     &mut backing[offset..offset + len],
@@ -939,9 +978,10 @@ mod tests {
     #[test]
     fn test_new_accepts_raw_static_memory() {
         const CHUNK_COUNT: usize = 16;
-        const REGION_SIZE: usize = CHUNK_COUNT * DEFAULT_CHUNK_SIZE
-            + CHUNK_COUNT.div_ceil(8)
-            + (DEFAULT_CHUNK_SIZE - 1);
+        const REGION_SIZE: usize =
+            ChunkAllocator::<DEFAULT_CHUNK_SIZE>::required_region_size(
+                CHUNK_COUNT,
+            );
         static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 
         // SAFETY: the static is used by this allocator alone.

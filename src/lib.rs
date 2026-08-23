@@ -48,9 +48,8 @@ SOFTWARE.
 //! ## Example
 //!
 //! The allocator manages one contiguous region: the chunks first, their
-//! bitmap at the end. A region of `chunks * CHUNK_SIZE + ceil(chunks / 8)`
-//! bytes holds that many chunks, plus up to `CHUNK_SIZE - 1` bytes for the
-//! padding the allocator may skip to align the first one.
+//! bitmap at the end. [`ChunkAllocator::required_region_size`] turns a chunk
+//! count into the region size that is guaranteed to hold it.
 //!
 //! ```rust
 //! #![feature(allocator_api)]
@@ -59,7 +58,7 @@ SOFTWARE.
 //! /// Named once, so that the chunk size is stated once.
 //! type Allocator = GlobalChunkAllocator;
 //!
-//! const REGION_SIZE: usize = 4096 * 256 + 512 + 255;
+//! const REGION_SIZE: usize = Allocator::required_region_size(4096);
 //! static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 //!
 //! #[global_allocator]

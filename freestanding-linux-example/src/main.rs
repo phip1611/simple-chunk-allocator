@@ -18,7 +18,7 @@ use simple_chunk_allocator::GlobalChunkAllocator;
 
 type Allocator = GlobalChunkAllocator<16>;
 
-const REGION_SIZE: usize = 16 * 16 + 16_usize.div_ceil(8) + (16 - 1);
+const REGION_SIZE: usize = Allocator::required_region_size(16);
 static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 
 #[global_allocator]

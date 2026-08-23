@@ -54,6 +54,12 @@ impl<const CHUNK_SIZE: usize> GlobalChunkAllocator<CHUNK_SIZE> {
         Self(spin::Mutex::new(inner_alloc))
     }
 
+    /// Wrapper around [`ChunkAllocator::required_region_size`].
+    #[inline]
+    pub const fn required_region_size(chunk_count: usize) -> usize {
+        ChunkAllocator::<CHUNK_SIZE>::required_region_size(chunk_count)
+    }
+
     /// Wrapper around [`ChunkAllocator::usage`].
     #[inline]
     pub fn usage(&self) -> f32 {
@@ -117,7 +123,7 @@ unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
 ///
 /// type Allocator = GlobalChunkAllocator<256>;
 ///
-/// const REGION_SIZE: usize = 16 * 256 + 2 + 255;
+/// const REGION_SIZE: usize = Allocator::required_region_size(16);
 /// static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 ///
 /// // SAFETY: `ALLOCATOR` is the only user of `REGION` for the whole program.

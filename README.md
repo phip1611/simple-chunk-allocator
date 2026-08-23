@@ -34,8 +34,8 @@ on small allocations.
   needs neither a particular alignment nor initialized content.
 
 The bitmap lives at the end of that region, so a region holds slightly fewer
-chunks than `len / chunk_size`: `chunks * chunk_size + ceil(chunks / 8)` bytes
-hold that many chunks, plus up to `chunk_size - 1` for the alignment padding.
+chunks than `len / chunk_size`. Use `required_region_size` to size storage for
+a given chunk count.
 
 ## Alignment
 
@@ -58,7 +58,7 @@ use simple_chunk_allocator::GlobalChunkAllocator;
 /// Named once, so that the chunk size is stated once.
 type Allocator = GlobalChunkAllocator<256>;
 
-const REGION_SIZE: usize = 4096 * 256 + 512 + 255;
+const REGION_SIZE: usize = Allocator::required_region_size(4096);
 static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 
 #[global_allocator]

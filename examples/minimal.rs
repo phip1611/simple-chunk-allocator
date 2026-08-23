@@ -35,7 +35,7 @@ type Allocator = GlobalChunkAllocator;
 /// `CHUNK_SIZE - 1` bytes to align the first chunk. `required_region_size`
 /// budgets for that, so the 4096 chunks are there in any case.
 const CHUNKS: usize = 4096;
-const REGION_SIZE: usize = CHUNKS * 256 + CHUNKS.div_ceil(8) + (256 - 1);
+const REGION_SIZE: usize = Allocator::required_region_size(CHUNKS);
 static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 
 #[global_allocator]

@@ -44,6 +44,8 @@
   a `#[repr(align(...))]` wrapper if a specific alignment is wanted.
 - **Breaking:** `usage` returns a ratio between `0.0` and `1.0` instead of a
   percentage rounded to two decimals. This drops the `libm` dependency.
+- `GlobalChunkAllocator` forwards `capacity`, `chunk_count`, `chunk_size` and
+  `min_alignment`.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

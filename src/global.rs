@@ -57,6 +57,30 @@ impl<const CHUNK_SIZE: usize> GlobalChunkAllocator<CHUNK_SIZE> {
         ChunkAllocator::<CHUNK_SIZE>::required_region_size(chunk_count)
     }
 
+    /// Wrapper around [`ChunkAllocator::chunk_size`].
+    #[inline]
+    pub const fn chunk_size(&self) -> usize {
+        CHUNK_SIZE
+    }
+
+    /// Wrapper around [`ChunkAllocator::min_alignment`].
+    #[inline]
+    pub const fn min_alignment(&self) -> usize {
+        CHUNK_SIZE
+    }
+
+    /// Wrapper around [`ChunkAllocator::capacity`].
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.0.lock().capacity()
+    }
+
+    /// Wrapper around [`ChunkAllocator::chunk_count`].
+    #[inline]
+    pub fn chunk_count(&self) -> usize {
+        self.0.lock().chunk_count()
+    }
+
     /// Wrapper around [`ChunkAllocator::usage`].
     #[inline]
     pub fn usage(&self) -> f32 {

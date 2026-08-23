@@ -39,7 +39,7 @@ static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
 #[global_allocator]
 // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
 static ALLOCATOR: GlobalChunkAllocator = unsafe {
-    GlobalChunkAllocator::new_raw(
+    GlobalChunkAllocator::new(
         core::ptr::slice_from_raw_parts_mut(
             core::ptr::addr_of_mut!(HEAP).cast(),
             1048576,

@@ -67,7 +67,7 @@ SOFTWARE.
 //! #[global_allocator]
 //! // SAFETY: ALLOCATOR exclusively owns both statics for the whole program.
 //! static ALLOCATOR: GlobalChunkAllocator<CHUNK_SIZE> = unsafe {
-//!     GlobalChunkAllocator::new_raw(
+//!     GlobalChunkAllocator::new(
 //!         core::ptr::slice_from_raw_parts_mut(
 //!             core::ptr::addr_of_mut!(HEAP).cast(),
 //!             CHUNKS * CHUNK_SIZE,

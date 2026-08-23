@@ -7,6 +7,9 @@
 - Improved documentation
 - **Breaking:** an invalid `CHUNK_SIZE` is a compile error instead of a
   runtime one. `ChunkAllocatorError::BadChunkSize` is removed.
+- **Breaking:** one constructor remains. `ChunkAllocator::new` and
+  `GlobalChunkAllocator::new` are `const unsafe fn`; `new_const` and `new_raw`
+  are removed.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

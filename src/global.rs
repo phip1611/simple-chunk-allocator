@@ -41,27 +41,17 @@ pub struct GlobalChunkAllocator<
 >(spin::Mutex<ChunkAllocator<'a, CHUNK_SIZE>>);
 
 impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
-    /// Creates a global allocator from backing storage in const contexts.
-    ///
-    /// Heap alignment is checked on the first allocation.
-    #[inline]
-    pub const fn new(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
-        let inner_alloc = ChunkAllocator::<CHUNK_SIZE>::new_const(heap, bitmap);
-        let inner_alloc = spin::Mutex::new(inner_alloc);
-        Self(inner_alloc)
-    }
-
-    /// Creates a global allocator from raw backing-memory slices.
+    /// Creates a global allocator over caller-provided backing memory.
     ///
     /// # Safety
-    /// `heap` and `bitmap` must meet [`ChunkAllocator::new_raw`] requirements
-    /// for the allocator lifetime.
+    /// `heap` and `bitmap` must meet [`ChunkAllocator::new`] requirements for
+    /// the allocator lifetime.
     #[inline]
-    pub const unsafe fn new_raw(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
+    pub const unsafe fn new(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
         // SAFETY: required validity and exclusivity are guaranteed by the
         // caller.
         let inner_alloc =
-            unsafe { ChunkAllocator::<CHUNK_SIZE>::new_raw(heap, bitmap) };
+            unsafe { ChunkAllocator::<CHUNK_SIZE>::new(heap, bitmap) };
         Self(spin::Mutex::new(inner_alloc))
     }
 
@@ -140,7 +130,7 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc
 ///
 /// // SAFETY: ALLOCATOR exclusively owns both statics for the whole program.
 /// static ALLOCATOR: GlobalChunkAllocator<CHUNK_SIZE> = unsafe {
-///     GlobalChunkAllocator::new_raw(
+///     GlobalChunkAllocator::new(
 ///         core::ptr::slice_from_raw_parts_mut(
 ///             core::ptr::addr_of_mut!(HEAP).cast(),
 ///             CHUNKS * CHUNK_SIZE,
@@ -230,7 +220,7 @@ mod tests {
             PageAligned::new([0; BITMAP_SIZE]);
         // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
         static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new_raw(
+            GlobalChunkAllocator::new(
                 core::ptr::slice_from_raw_parts_mut(
                     core::ptr::addr_of_mut!(HEAP_MEM).cast(),
                     HEAP_SIZE,
@@ -289,7 +279,7 @@ mod tests {
             PageAligned::new([0; BITMAP_SIZE]);
         // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
         static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new_raw(
+            GlobalChunkAllocator::new(
                 core::ptr::slice_from_raw_parts_mut(
                     core::ptr::addr_of_mut!(HEAP_MEM).cast(),
                     HEAP_SIZE,
@@ -326,7 +316,7 @@ mod tests {
             PageAligned::new([0; BITMAP_SIZE]);
         // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
         static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new_raw(
+            GlobalChunkAllocator::new(
                 core::ptr::slice_from_raw_parts_mut(
                     core::ptr::addr_of_mut!(HEAP_MEM).cast(),
                     HEAP_SIZE,

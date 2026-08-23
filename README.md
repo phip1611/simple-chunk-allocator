@@ -38,7 +38,7 @@ on small allocations.
 
 The `heap!` and `heap_bitmap!` macros create page-aligned backing storage. Both
 derive their size from the chunk geometry, so a single pair of constants
-describes the arrays and the slices passed to `new_raw`:
+describes the arrays and the raw slices passed to `new`:
 
 ```rust
 use simple_chunk_allocator::{
@@ -56,7 +56,7 @@ static mut BITMAP: PageAligned<[u8; CHUNKS / 8]> =
 #[global_allocator]
 // SAFETY: ALLOCATOR exclusively owns both statics for the whole program.
 static ALLOCATOR: GlobalChunkAllocator<CHUNK_SIZE> = unsafe {
-    GlobalChunkAllocator::new_raw(
+    GlobalChunkAllocator::new(
         core::ptr::slice_from_raw_parts_mut(
             core::ptr::addr_of_mut!(HEAP).cast(),
             CHUNKS * CHUNK_SIZE,
@@ -74,7 +74,7 @@ fn main() {
 }
 ```
 
-`new_raw` is unsafe because the allocator cannot verify the storage lifetime,
+`new` is unsafe because the allocator cannot verify the storage lifetime,
 exclusivity, or overlap. See its API documentation for the complete contract.
 
 ## Direct use and allocator API
@@ -92,19 +92,19 @@ vec.push(42);
 ```
 
 The inner `ChunkAllocator` can also be driven directly with `allocate`,
-`deallocate`, and `realloc`. It is not synchronized, so it needs `&mut self`.
-`new` validates the storage instead of deferring the alignment check to the
-first allocation:
+`deallocate`, and `realloc`. It is not synchronized, so it needs `&mut self`:
 
 ```rust
 // The heap must be at least CHUNK_SIZE-aligned; `PageAligned` ensures that.
 let mut heap = PageAligned::new([0_u8; 16 * CHUNK_SIZE]);
 let mut bitmap = PageAligned::new([0_u8; 16 / 8]);
-let mut allocator = ChunkAllocator::<CHUNK_SIZE>::new(
-    heap.as_mut_slice(),
-    bitmap.as_mut_slice(),
-)
-.unwrap();
+// SAFETY: both arrays outlive the allocator and are not used otherwise.
+let mut allocator = unsafe {
+    ChunkAllocator::<CHUNK_SIZE>::new(
+        heap.as_mut_slice(),
+        bitmap.as_mut_slice(),
+    )
+};
 
 let layout = Layout::from_size_align(64, 8).unwrap();
 let allocation = allocator.allocate(layout).unwrap();

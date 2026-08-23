@@ -77,7 +77,7 @@ unsafe impl<A: GlobalAlloc> Allocator for GlobalAllocAdapter<A> {
 fn main() {
     // SAFETY: these statics are exclusively owned by `chunk_allocator`.
     let chunk_allocator = unsafe {
-        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new_raw(
+        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(
             core::ptr::slice_from_raw_parts_mut(
                 core::ptr::addr_of_mut!(HEAP_MEMORY).cast(),
                 HEAP_SIZE,

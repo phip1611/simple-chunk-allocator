@@ -665,7 +665,6 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PageAligned;
     use std::alloc::{AllocError, Allocator, Global};
     use std::cmp::max;
     use std::ptr::NonNull;
@@ -675,9 +674,13 @@ mod tests {
 
         use super::*;
 
-        /// Helper struct to let the std vector align stuff at a page boundary.
-        /// Forwards requests to the global Rust allocator provided by the
-        /// standard library.
+        /// Forwards to the global Rust allocator, but raises every alignment
+        /// to a page.
+        ///
+        /// Tests that expect a specific chunk count or exercise page-aligned
+        /// allocations need to know where their backing memory starts. A page
+        /// boundary is the strongest guarantee the allocator itself can make
+        /// use of.
         pub struct GlobalPageAlignedAlloc;
 
         // SAFETY: each method forwards to `Global` using the matching layout.
@@ -686,56 +689,55 @@ mod tests {
                 &self,
                 layout: Layout,
             ) -> Result<NonNull<[u8]>, AllocError> {
-                let alignment = max(layout.align(), 4096);
-                // unwrap should never fail, because layout.align() is already a
-                // power of 2, otherwise the value not exist
-                // here.
-                let layout = layout.align_to(alignment).unwrap();
+                // `align_to` cannot fail: `layout.align()` is a power of two
+                // already, and so is 4096.
+                let layout =
+                    layout.align_to(max(layout.align(), 4096)).unwrap();
                 Global.allocate(layout)
             }
 
             unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-                let alignment = max(layout.align(), 4096);
-                // unwrap should never fail, because layout.align() is already a
-                // power of 2, otherwise the value not exist
-                // here.
-                let layout = layout.align_to(alignment).unwrap();
+                let layout =
+                    layout.align_to(max(layout.align(), 4096)).unwrap();
                 // SAFETY: delegated allocation used the same adjusted layout.
                 unsafe { Global.deallocate(ptr, layout) }
             }
         }
 
-        /// Creates backing memory for the allocator and the bitmap management
-        /// structure. Uses the std global allocator for this. The
-        /// memory is page-aligned.
-        /// Creates page-aligned backing memory for 32 chunks of the default
-        /// size, plus the bitmap that now lives behind them.
-        pub fn create_region() -> Vec<u8, GlobalPageAlignedAlloc> {
-            create_region_for::<DEFAULT_CHUNK_SIZE>(32)
+        /// Page-aligned backing memory of exactly `len` bytes, filled with
+        /// `fill`.
+        ///
+        /// Filling with something other than zero is what proves that the
+        /// allocator does not rely on a pre-zeroed region.
+        pub fn region(len: usize, fill: u8) -> Vec<u8, GlobalPageAlignedAlloc> {
+            let mut region = Vec::with_capacity_in(len, GlobalPageAlignedAlloc);
+            region.resize(len, fill);
+            assert_eq!(
+                region.as_ptr().align_offset(4096),
+                0,
+                "backing memory must be page aligned"
+            );
+            region
         }
 
-        /// Creates page-aligned backing memory holding exactly
-        /// `chunk_count` chunks plus their bitmap.
-        pub fn create_region_for<const CHUNK_SIZE: usize>(
+        /// Page-aligned backing memory that holds exactly `chunk_count` chunks
+        /// plus their bitmap.
+        pub fn region_for<const CHUNK_SIZE: usize>(
             chunk_count: usize,
         ) -> Vec<u8, GlobalPageAlignedAlloc> {
-            let len = chunk_count * CHUNK_SIZE + chunk_count.div_ceil(8);
-            let mut region = Vec::with_capacity_in(len, GlobalPageAlignedAlloc);
-            region.resize(len, 0);
-            assert_eq!(region.as_ptr().align_offset(4096), 0);
-            region
+            region(chunk_count * CHUNK_SIZE + chunk_count.div_ceil(8), 0)
         }
 
         /// Creates an allocator over the given backing memory.
         ///
-        /// Every test keeps its backing vectors in scope for as long as the
-        /// allocator, so the shim can hide the unsafe block that every
-        /// construction would otherwise repeat.
+        /// Every test keeps its region in scope for as long as the allocator,
+        /// so the shim can hide the unsafe block that every construction would
+        /// otherwise repeat.
         pub fn allocator_over<const CHUNK_SIZE: usize>(
             region: &mut [u8],
         ) -> ChunkAllocator<CHUNK_SIZE> {
-            // SAFETY: callers keep the region alive and untouched, which the
-            // returned allocator no longer expresses in its type.
+            // SAFETY: the caller keeps `region` alive and untouched for as long
+            // as the allocator, which the returned type no longer expresses.
             unsafe { ChunkAllocator::new(region.as_mut_ptr(), region.len()) }
         }
 
@@ -796,6 +798,140 @@ mod tests {
         }
     }
 
+    /// The region has to hold the chunks *and* their bitmap, and the allocator
+    /// must not leave usable space behind. Sweeping the start offset covers
+    /// the padding it inserts to align the first chunk.
+    #[test]
+    fn test_geometry_uses_the_region_to_the_last_byte() {
+        const CS: usize = 64;
+        let mut backing = helpers::region(16 * 1024, 0xff);
+
+        for offset in [0, 1, 7, 63, 64, 65, 4095] {
+            for len in [0, 1, CS, CS + 1, 3 * CS, 1000, 4096, 8191] {
+                let region = &mut backing[offset..offset + len];
+                let alloc = helpers::allocator_over::<CS>(region);
+                let chunks = alloc.chunk_count();
+
+                let padding =
+                    alloc.heap_ptr() as usize - region.as_ptr() as usize;
+                let used = padding + chunks * CS + chunks.div_ceil(8);
+                assert!(used <= len, "geometry overruns the region");
+                assert!(
+                    padding + (chunks + 1) * CS + (chunks + 1).div_ceil(8)
+                        > len,
+                    "one more chunk would still have fit"
+                );
+            }
+        }
+    }
+
+    /// The alignment guarantee the allocator gives to every allocation rests
+    /// on this: it aligns the first chunk itself, whatever the caller passed.
+    #[test]
+    fn test_first_chunk_is_chunk_aligned() {
+        const CS: usize = 512;
+        let mut backing = helpers::region(8 * 1024, 0);
+
+        for offset in [0, 1, 8, 255, 256, 511, 513] {
+            let region = &mut backing[offset..];
+            let alloc = helpers::allocator_over::<CS>(region);
+            assert_eq!(alloc.heap_ptr().align_offset(CS), 0);
+            assert_eq!(alloc.min_alignment(), CS);
+        }
+    }
+
+    /// A region that cannot hold a single chunk is not an error: it produces
+    /// an allocator that is simply always out of memory.
+    #[test]
+    fn test_region_too_small_yields_an_empty_allocator() {
+        const CS: usize = 256;
+        let mut backing = helpers::region(CS, 0);
+
+        for len in [0, 1, CS - 1] {
+            let mut alloc = helpers::allocator_over::<CS>(&mut backing[..len]);
+            assert_eq!(alloc.chunk_count(), 0);
+            assert_eq!(alloc.capacity(), 0);
+            assert_eq!(alloc.usage(), 0.0);
+            assert_eq!(
+                alloc.allocate(Layout::from_size_align(1, 1).unwrap()),
+                Err(OutOfMemory)
+            );
+        }
+    }
+
+    /// A region of `chunks * CHUNK_SIZE + ceil(chunks / 8) + CHUNK_SIZE - 1`
+    /// bytes must deliver `chunks` chunks no matter where it ends up: the last
+    /// term covers the padding the allocator may skip.
+    #[test]
+    fn test_a_padded_region_holds_the_chunks_it_was_sized_for() {
+        const CS: usize = 128;
+        let requested = [1, 7, 8, 9, 64];
+        let mut backing =
+            helpers::region(64 * CS + 64_usize.div_ceil(8) + 2 * CS, 0);
+
+        for chunk_count in requested {
+            let len = chunk_count * CS + chunk_count.div_ceil(8) + (CS - 1);
+            for offset in [0, 1, CS - 1, CS] {
+                let alloc = helpers::allocator_over::<CS>(
+                    &mut backing[offset..offset + len],
+                );
+                assert!(
+                    alloc.chunk_count() >= chunk_count,
+                    "asked for {chunk_count} chunks at offset {offset}, got {}",
+                    alloc.chunk_count()
+                );
+            }
+        }
+    }
+
+    /// The bitmap lives in the same region as the chunks, so an off-by-one in
+    /// the geometry would let allocations scribble over the bookkeeping. Every
+    /// chunk is written full width to catch that.
+    #[test]
+    fn test_allocations_never_reach_the_bitmap() {
+        const CS: usize = 256;
+        const CHUNKS: usize = 16;
+        let mut backing = helpers::region_for::<CS>(CHUNKS);
+        let mut alloc = helpers::allocator_over::<CS>(&mut backing);
+        let layout = Layout::from_size_align(CS, 1).unwrap();
+
+        let allocations: Vec<_> = (0..CHUNKS)
+            .map(|index| helpers::Allocation {
+                ptr: alloc.allocate(layout).unwrap().cast(),
+                layout,
+                pattern: index as u8 | 0x80,
+            })
+            .collect();
+        allocations.iter().for_each(helpers::Allocation::fill);
+
+        // The heap is full: the bitmap survived being written up to its first
+        // byte, and still reports every chunk as used.
+        assert_eq!(alloc.allocate(layout), Err(OutOfMemory));
+        assert!((0..CHUNKS).all(|index| !alloc.chunk_is_free(index)));
+
+        for allocation in allocations {
+            allocation.assert_pattern(layout.size());
+            // SAFETY: every record is a live allocation with its layout.
+            unsafe { alloc.deallocate(allocation.ptr, allocation.layout) };
+        }
+        assert!((0..CHUNKS).all(|index| alloc.chunk_is_free(index)));
+    }
+
+    /// A region taken from a memory map holds whatever the firmware left
+    /// behind, so the allocator has to zero the bitmap before using it.
+    #[test]
+    fn test_dirty_region_starts_out_empty() {
+        const CS: usize = 256;
+        let mut backing = helpers::region(CS * 16 + 2, 0xff);
+        let mut alloc = helpers::allocator_over::<CS>(&mut backing);
+
+        assert_eq!(alloc.usage(), 0.0);
+        // Asking for the whole heap in one piece: a single chunk left over
+        // from the previous content of the region would break it.
+        let whole_heap = Layout::from_size_align(alloc.capacity(), 1).unwrap();
+        assert!(alloc.allocate(whole_heap).is_ok());
+    }
+
     /// Constructing from raw pointers into statics is the shape a
     /// `#[global_allocator]` needs. That this also works in a const context is
     /// covered by the doctests and `examples/minimal.rs`, which build a
@@ -806,8 +942,7 @@ mod tests {
         const REGION_SIZE: usize = CHUNK_COUNT * DEFAULT_CHUNK_SIZE
             + CHUNK_COUNT.div_ceil(8)
             + (DEFAULT_CHUNK_SIZE - 1);
-        static mut REGION: PageAligned<[u8; REGION_SIZE]> =
-            PageAligned::new([0; REGION_SIZE]);
+        static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 
         // SAFETY: the static is used by this allocator alone.
         let alloc: ChunkAllocator = unsafe {
@@ -819,26 +954,11 @@ mod tests {
         assert!(alloc.chunk_count() >= CHUNK_COUNT);
     }
 
-    /// The bitmap must describe every chunk of the heap and nothing beyond it.
-    #[test]
-    #[cfg_attr(miri, ignore)] // passes but is very slow in Miri
-    fn test_chunk_count_matches_bitmap() {
-        // The bitmap has byte granularity, so the smallest heap the
-        // constructor accepts holds eight chunks. 128 is an arbitrary upper
-        // bound.
-        for chunk_count in (8..128).step_by(8) {
-            let mut region =
-                helpers::create_region_for::<DEFAULT_CHUNK_SIZE>(chunk_count);
-            let alloc: ChunkAllocator = helpers::allocator_over(&mut region);
-            assert_eq!(chunk_count, alloc.chunk_count());
-        }
-    }
-
     /// Tests the method `chunk_index_to_bitmap_indices()`.
     #[test]
     fn test_chunk_index_to_bitmap_indices() {
-        let mut region = helpers::create_region();
-        let alloc: ChunkAllocator = helpers::allocator_over(&mut region);
+        let mut backing = helpers::region_for::<DEFAULT_CHUNK_SIZE>(32);
+        let alloc: ChunkAllocator = helpers::allocator_over(&mut backing);
 
         // chunk 3 gets described by bitmap byte 0 bit 3
         assert_eq!((0, 3), alloc.chunk_index_to_bitmap_indices(3));
@@ -849,13 +969,11 @@ mod tests {
         assert_eq!((1, 7), alloc.chunk_index_to_bitmap_indices(15));
     }
 
-    /// Marking chunks must affect exactly the addressed bit. The bitmap is
-    /// inside the region now, so it is reached through the allocator rather
-    /// than written directly.
+    /// Marking chunks must affect exactly the addressed bit.
     #[test]
     fn test_chunk_is_free() {
-        let mut region = helpers::create_region();
-        let mut alloc: ChunkAllocator = helpers::allocator_over(&mut region);
+        let mut backing = helpers::region_for::<DEFAULT_CHUNK_SIZE>(32);
+        let mut alloc: ChunkAllocator = helpers::allocator_over(&mut backing);
 
         for index in [0, 1, 2, 3, 5] {
             alloc.mark_chunk_as_used(index);
@@ -864,18 +982,23 @@ mod tests {
         assert!(!alloc.chunk_is_free(3));
         assert!(alloc.chunk_is_free(4));
         assert!(!alloc.chunk_is_free(5));
+        assert!(alloc.chunk_is_free(6));
+
+        alloc.mark_chunk_as_free(3);
+        assert!(alloc.chunk_is_free(3));
+        assert!(!alloc.chunk_is_free(2));
     }
 
     /// Tests the `chunk_index_to_ptr` method.
     #[test]
     fn test_chunk_index_to_ptr() {
-        let mut region = helpers::create_region();
-        let alloc: ChunkAllocator = helpers::allocator_over(&mut region);
+        let mut backing = helpers::region_for::<DEFAULT_CHUNK_SIZE>(32);
+        let alloc: ChunkAllocator = helpers::allocator_over(&mut backing);
         let heap_ptr = alloc.heap_ptr();
 
-        // SAFETY: all computed pointers remain within `heap`.
+        assert_eq!(heap_ptr, alloc.chunk_index_to_ptr(0));
+        // SAFETY: all computed pointers remain within the chunk area.
         unsafe {
-            assert_eq!(heap_ptr, alloc.chunk_index_to_ptr(0));
             assert_eq!(
                 heap_ptr.add(alloc.chunk_size()),
                 alloc.chunk_index_to_ptr(1)
@@ -891,8 +1014,8 @@ mod tests {
     /// `find_free_continuous_memory_region()`.
     #[test]
     fn test_find_free_continuous_memory_region_basic() {
-        let mut region = helpers::create_region();
-        let mut alloc: ChunkAllocator = helpers::allocator_over(&mut region);
+        let mut backing = helpers::region_for::<DEFAULT_CHUNK_SIZE>(32);
+        let mut alloc: ChunkAllocator = helpers::allocator_over(&mut backing);
 
         // I made this test for these two properties. Test might need to get
         // adjusted if they change
@@ -939,8 +1062,8 @@ mod tests {
     /// `find_free_continuous_memory_region()`.
     #[test]
     fn test_find_free_continuous_memory_region_full_1() {
-        let mut region = helpers::create_region();
-        let mut alloc: ChunkAllocator = helpers::allocator_over(&mut region);
+        let mut backing = helpers::region_for::<DEFAULT_CHUNK_SIZE>(32);
+        let mut alloc: ChunkAllocator = helpers::allocator_over(&mut backing);
 
         // I made this test for these two properties. Test might need to get
         // adjusted if they change
@@ -980,8 +1103,8 @@ mod tests {
     /// `find_free_continuous_memory_region()`.
     #[test]
     fn test_find_free_continuous_memory_region_full_2() {
-        let mut region = helpers::create_region();
-        let mut alloc: ChunkAllocator = helpers::allocator_over(&mut region);
+        let mut backing = helpers::region_for::<DEFAULT_CHUNK_SIZE>(32);
+        let mut alloc: ChunkAllocator = helpers::allocator_over(&mut backing);
 
         // I made this test for these two properties. Test might need to get
         // adjusted if they change
@@ -1005,15 +1128,15 @@ mod tests {
 
     #[test]
     fn test_allocate_respects_boundaries_and_reuses_chunks() {
-        let mut region = helpers::create_region_for::<256>(8);
-        let mut allocator = helpers::allocator_over::<256>(&mut region);
+        let mut backing = helpers::region_for::<256>(8);
+        let mut allocator = helpers::allocator_over::<256>(&mut backing);
         let layout = Layout::from_size_align(256, 1).unwrap();
         let mut allocations = Vec::new();
 
         for _ in 0..8 {
             allocations.push(allocator.allocate(layout).unwrap());
         }
-        assert!(matches!(allocator.allocate(layout), Err(OutOfMemory)));
+        assert_eq!(allocator.allocate(layout), Err(OutOfMemory));
         assert_eq!(allocator.usage(), 100.0);
 
         let ptr = allocations.pop().unwrap().cast();
@@ -1024,8 +1147,8 @@ mod tests {
 
     #[test]
     fn test_allocate_honors_requested_alignment() {
-        let mut region = helpers::create_region_for::<256>(64);
-        let mut allocator = helpers::allocator_over::<256>(&mut region);
+        let mut backing = helpers::region_for::<256>(64);
+        let mut allocator = helpers::allocator_over::<256>(&mut backing);
         let mut allocations = Vec::new();
 
         for alignment in
@@ -1053,8 +1176,8 @@ mod tests {
     /// usage below is `chunks_in_use / 16`.
     #[test]
     fn test_realloc_preserves_data_and_releases_chunks() {
-        let mut region = helpers::create_region_for::<256>(16);
-        let mut allocator = helpers::allocator_over::<256>(&mut region);
+        let mut backing = helpers::region_for::<256>(16);
+        let mut allocator = helpers::allocator_over::<256>(&mut backing);
         let old_layout = Layout::from_size_align(128, 64).unwrap();
         let allocation = allocator.allocate(old_layout).unwrap();
         let record = helpers::Allocation {
@@ -1122,8 +1245,8 @@ mod tests {
         const STEPS: usize = 64;
         #[cfg(not(miri))]
         const STEPS: usize = 512;
-        let mut region = helpers::create_region_for::<256>(64);
-        let mut allocator = helpers::allocator_over::<256>(&mut region);
+        let mut backing = helpers::region_for::<256>(64);
+        let mut allocator = helpers::allocator_over::<256>(&mut backing);
         let mut seed = 0x5eed_u64;
         let mut live: Vec<helpers::Allocation> = Vec::new();
 

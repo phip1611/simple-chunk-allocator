@@ -26,7 +26,6 @@ SOFTWARE.
 use crate::chunk_cache::ChunkCacheEntry;
 use core::alloc::Layout;
 use core::cell::Cell;
-use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 /// Zero sized types may trigger this; according to the Rust doc of the
@@ -61,7 +60,7 @@ pub const DEFAULT_CHUNK_SIZE: usize = 256;
 /// Each allocation consumes whole chunks. A larger chunk size reduces bitmap
 /// size and search work; a smaller size reduces internal fragmentation.
 #[derive(Debug)]
-pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
+pub struct ChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Backing memory for heap.
     heap: NonNull<u8>,
     /// Length of `heap` in bytes.
@@ -70,9 +69,6 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     bitmap: NonNull<u8>,
     /// Length of `bitmap` in bytes.
     bitmap_len: usize,
-    /// Keeps the backing memory exclusively borrowed for the allocator
-    /// lifetime.
-    backing_memory: PhantomData<&'a mut [u8]>,
     /// Helper to do some initial initialization on the first runtime
     /// invocation.
     is_first_alloc: Cell<bool>,
@@ -89,13 +85,11 @@ pub struct ChunkAllocator<'a, const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     chunks_in_use: usize,
 }
 
-// SAFETY: `backing_memory` represents exclusive ownership of both allocations.
-unsafe impl<'a, const CHUNK_SIZE: usize> Send
-    for ChunkAllocator<'a, CHUNK_SIZE>
-{
-}
+// SAFETY: the allocator is the exclusive owner of both backing allocations, and
+// its raw pointers stay valid wherever it is moved to.
+unsafe impl<const CHUNK_SIZE: usize> Send for ChunkAllocator<CHUNK_SIZE> {}
 
-impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
+impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
     /// Rejects an invalid chunk size when the allocator is instantiated.
     ///
     /// A power of two is what makes every chunk `CHUNK_SIZE`-aligned once the
@@ -130,8 +124,9 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// [0]: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
     ///
     /// # Safety
-    /// `heap` and `bitmap` must be valid, non-null and non-overlapping for
-    /// `'a`, and this allocator must be their only user for that time.
+    /// `heap` and `bitmap` must be valid, non-null and non-overlapping for as
+    /// long as the allocator lives, and it must be their only user for that
+    /// time. Nothing in the type system enforces this any more.
     #[inline]
     pub const unsafe fn new(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
         let () = Self::VALIDATE_CHUNK_SIZE;
@@ -161,7 +156,6 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
             heap_len,
             bitmap: NonNull::new(bitmap.as_mut_ptr()).unwrap(),
             bitmap_len,
-            backing_memory: PhantomData,
             is_first_alloc: Cell::new(true),
             // The real alignment is unknown until the first allocation, so the
             // hint starts at the weakest possible value.
@@ -713,15 +707,16 @@ mod tests {
 
         /// Creates an allocator over the given backing memory.
         ///
-        /// The borrows tie the allocator to memory that outlives it, which is
-        /// the part of the constructor contract the type system can still
-        /// carry after construction went raw.
-        pub fn allocator_over<'a, const CHUNK_SIZE: usize>(
-            heap: &'a mut [u8],
-            bitmap: &'a mut [u8],
-        ) -> ChunkAllocator<'a, CHUNK_SIZE> {
-            // SAFETY: both slices are exclusively borrowed for `'a` and cannot
-            // overlap, because they are distinct allocations.
+        /// Every test keeps its backing vectors in scope for as long as the
+        /// allocator, so the shim can hide the unsafe block that every
+        /// construction would otherwise repeat.
+        pub fn allocator_over<const CHUNK_SIZE: usize>(
+            heap: &mut [u8],
+            bitmap: &mut [u8],
+        ) -> ChunkAllocator<CHUNK_SIZE> {
+            // SAFETY: both slices are distinct allocations, so they cannot
+            // overlap. Callers keep them alive and untouched, which the
+            // returned allocator no longer expresses in its type.
             unsafe { ChunkAllocator::new(heap, bitmap) }
         }
 

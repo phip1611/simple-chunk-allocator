@@ -10,6 +10,9 @@
 - **Breaking:** one constructor remains. `ChunkAllocator::new` and
   `GlobalChunkAllocator::new` are `const unsafe fn`; `new_const` and `new_raw`
   are removed.
+- **Breaking:** the lifetime parameter of `ChunkAllocator` and
+  `GlobalChunkAllocator` is gone. The obligation it stood for is part of the
+  safety contract of `new`.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

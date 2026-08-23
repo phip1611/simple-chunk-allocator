@@ -35,12 +35,11 @@ pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
 /// [`Self::allocator_api_glue`] exposes the nightly [`Allocator`] trait. See
 /// the crate-level documentation for a complete `#[global_allocator]` setup.
 #[derive(Debug)]
-pub struct GlobalChunkAllocator<
-    'a,
-    const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE,
->(spin::Mutex<ChunkAllocator<'a, CHUNK_SIZE>>);
+pub struct GlobalChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE>(
+    spin::Mutex<ChunkAllocator<CHUNK_SIZE>>,
+);
 
-impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
+impl<const CHUNK_SIZE: usize> GlobalChunkAllocator<CHUNK_SIZE> {
     /// Creates a global allocator over caller-provided backing memory.
     ///
     /// # Safety
@@ -63,16 +62,14 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
 
     /// Returns an instance of [`AllocatorApiGlue`].
     #[inline]
-    pub const fn allocator_api_glue<'b>(
-        &'b self,
-    ) -> AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
+    pub const fn allocator_api_glue(&self) -> AllocatorApiGlue<'_, CHUNK_SIZE> {
         AllocatorApiGlue(self)
     }
 }
 
 // SAFETY: the mutex serializes access to the exclusively owned backing memory.
-unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc
-    for GlobalChunkAllocator<'a, CHUNK_SIZE>
+unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
+    for GlobalChunkAllocator<CHUNK_SIZE>
 {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -152,13 +149,13 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc
 /// assert!(ALLOCATOR.usage() > 0.0);
 /// ```
 #[derive(Debug)]
-pub struct AllocatorApiGlue<'a, 'b, const CHUNK_SIZE: usize>(
-    &'a GlobalChunkAllocator<'b, CHUNK_SIZE>,
+pub struct AllocatorApiGlue<'a, const CHUNK_SIZE: usize>(
+    &'a GlobalChunkAllocator<CHUNK_SIZE>,
 );
 
 // SAFETY: methods delegate to the mutex-protected `GlobalChunkAllocator`.
-unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator
-    for AllocatorApiGlue<'a, 'b, CHUNK_SIZE>
+unsafe impl<const CHUNK_SIZE: usize> Allocator
+    for AllocatorApiGlue<'_, CHUNK_SIZE>
 {
     #[inline]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {

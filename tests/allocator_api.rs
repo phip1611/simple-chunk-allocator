@@ -30,7 +30,7 @@ SOFTWARE.
 
 #![feature(allocator_api)]
 
-use core::alloc::{GlobalAlloc, Layout};
+use core::alloc::{Allocator, GlobalAlloc, Layout};
 use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
 
 mod common;
@@ -156,5 +156,66 @@ fn realloc_reuses_the_chunks_an_allocation_already_owns() {
         Layout::from_size_align(DEFAULT_CHUNK_SIZE + 1, 1).unwrap();
     // SAFETY: `moved` is the live allocation for `moved_layout`.
     unsafe { GlobalAlloc::dealloc(&ALLOCATOR, moved, moved_layout) };
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// Growing a collection is the only way `Allocator::grow` gets called, and no
+/// other test reaches it: `with_capacity_in` allocates once and never resizes.
+#[test]
+fn growing_a_collection_moves_it_only_when_it_has_to() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    // Starting at one element forces a growth step per doubling. The first
+    // steps stay inside the chunk the allocation already owns; the later ones
+    // have to move it, and both paths must preserve the contents.
+    let mut values = Vec::with_capacity_in(1, ALLOCATOR.allocator_api_glue());
+    for value in 0..512_u16 {
+        values.push(value);
+    }
+    assert!(values.iter().copied().eq(0..512));
+
+    values.truncate(8);
+    values.shrink_to_fit();
+    assert!(values.iter().copied().eq(0..8));
+    assert_eq!(ALLOCATOR.usage(), 1.0 / CHUNK_COUNT as f32);
+
+    drop(values);
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// An allocation cannot gain alignment on the way: the underlying `realloc`
+/// keeps the one it was made with. `grow` has to report that instead of
+/// unwinding, which a caller in a `no_std` binary could not recover from.
+#[test]
+fn grow_refuses_an_alignment_it_cannot_provide() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    let glue = ALLOCATOR.allocator_api_glue();
+    let layout = Layout::from_size_align(8, 8).unwrap();
+    let ptr = glue.allocate(layout).unwrap().cast::<u8>();
+    let stricter = Layout::from_size_align(16, DEFAULT_CHUNK_SIZE * 2).unwrap();
+
+    // SAFETY: `ptr` is live, made for `layout`, and `stricter` is larger.
+    assert!(unsafe { glue.grow(ptr, layout, stricter) }.is_err());
+    assert_eq!(
+        ALLOCATOR.usage(),
+        1.0 / CHUNK_COUNT as f32,
+        "the refused grow must leave the allocation alone"
+    );
+
+    // SAFETY: `ptr` is still the live allocation made for `layout`.
+    unsafe { glue.deallocate(ptr, layout) };
     assert_eq!(ALLOCATOR.usage(), 0.0);
 }

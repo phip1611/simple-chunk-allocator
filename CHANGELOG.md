@@ -46,6 +46,8 @@
   percentage rounded to two decimals. This drops the `libm` dependency.
 - `GlobalChunkAllocator` forwards `capacity`, `chunk_count`, `chunk_size` and
   `min_alignment`.
+- `AllocatorApiGlue::grow` reports an alignment it cannot serve as `AllocError`
+  instead of panicking.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

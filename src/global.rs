@@ -192,10 +192,19 @@ unsafe impl<const CHUNK_SIZE: usize> Allocator
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        assert!(
-            old_layout.align() >= new_layout.align(),
-            "change of alignment currently not supported"
-        );
+        // `ChunkAllocator::realloc` keeps the original alignment, so a
+        // stricter one cannot be served. Refuse it rather than panic: an
+        // allocator that unwinds out of `grow` is far harder to use than one
+        // that reports failure, and the trait allows reporting it.
+        if new_layout.align() > old_layout.align() {
+            error!(
+                "cannot grow from alignment {} to {}",
+                old_layout.align(),
+                new_layout.align()
+            );
+            return Err(AllocError);
+        }
+
         let mut this = self.0.0.lock();
         // SAFETY: `Allocator::grow` requires a valid allocation from `self`.
         unsafe { this.realloc(ptr, old_layout, new_layout.size()) }.map_err(

@@ -1,7 +1,7 @@
 # Simple Chunk Allocator
 
-A nightly-only `no_std` allocator that manages fixed-size chunks in
-caller-provided static memory.
+A nightly-only `no_std` allocator that manages fixed-size chunks in a single
+caller-provided memory region.
 
 It is suitable for small static heaps in kernels, bootloaders, and freestanding
 binaries.
@@ -9,7 +9,8 @@ binaries.
 ## Highlights
 
 - ✅ `no_std` allocator with test coverage
-- ✅ uses static memory as backing storage (no paging/page table manipulations)
+- ✅ uses one caller-provided region as backing storage (no paging/page table
+  manipulations)
 - ✅ allocation strategy is a combination of next-fit and best-fit
 - ✅ reasonably fast with low code complexity
 - ✅ const compatibility (no runtime `init()` required)
@@ -29,44 +30,41 @@ on small allocations.
 ## Requirements
 
 - Rust nightly, because the crate uses the unstable allocator API.
-- A non-empty heap whose length is a multiple of the chunk size.
-- A chunk count divisible by eight.
-- A bitmap with exactly one bit per heap chunk.
-- Heap storage aligned to the chunk size. Page alignment is recommended.
+- One writable memory region. Its length decides how many chunks fit, and it
+  needs neither a particular alignment nor initialized content.
+
+The bitmap lives at the end of that region, so a region holds slightly fewer
+chunks than `len / chunk_size`: `chunks * chunk_size + ceil(chunks / 8)` bytes
+hold that many chunks, plus up to `chunk_size - 1` for the alignment padding.
+
+## Alignment
+
+The allocator aligns the first chunk itself, which makes every chunk aligned to
+the chunk size and costs up to `chunk_size - 1` bytes of padding. Passing a
+region that is already chunk-aligned - a page-aligned one is the easiest way -
+avoids that.
+
+An allocation asking for more alignment than the chunk size is served by every
+`alignment / chunk_size`-th chunk. Which ones those are shifts with the region,
+but they exist wherever it starts: page-aligned allocations come out of a
+merely chunk-aligned region. Such a request needs a free run in the right
+place, which is a question of heap size and fragmentation, not of alignment.
 
 ## Global allocator
 
-The `heap!` and `heap_bitmap!` macros create page-aligned backing storage. Both
-derive their size from the chunk geometry, so a single pair of constants
-describes the arrays and the raw slices passed to `new`:
-
 ```rust
-use simple_chunk_allocator::{
-    GlobalChunkAllocator, PageAligned, heap, heap_bitmap,
-};
+use simple_chunk_allocator::GlobalChunkAllocator;
 
-const CHUNKS: usize = 4096;
-const CHUNK_SIZE: usize = 256;
+/// Named once, so that the chunk size is stated once.
+type Allocator = GlobalChunkAllocator<256>;
 
-static mut HEAP: PageAligned<[u8; CHUNKS * CHUNK_SIZE]> =
-    heap!(chunks = CHUNKS, chunksize = CHUNK_SIZE);
-static mut BITMAP: PageAligned<[u8; CHUNKS / 8]> =
-    heap_bitmap!(chunks = CHUNKS);
+const REGION_SIZE: usize = 4096 * 256 + 512 + 255;
+static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 
 #[global_allocator]
-// SAFETY: ALLOCATOR exclusively owns both statics for the whole program.
-static ALLOCATOR: GlobalChunkAllocator<CHUNK_SIZE> = unsafe {
-    GlobalChunkAllocator::new(
-        core::ptr::slice_from_raw_parts_mut(
-            core::ptr::addr_of_mut!(HEAP).cast(),
-            CHUNKS * CHUNK_SIZE,
-        ),
-        core::ptr::slice_from_raw_parts_mut(
-            core::ptr::addr_of_mut!(BITMAP).cast(),
-            CHUNKS / 8,
-        ),
-    )
-};
+// SAFETY: `ALLOCATOR` is the only user of `REGION` for the whole program.
+static ALLOCATOR: Allocator =
+    unsafe { Allocator::new((&raw mut REGION).cast(), REGION_SIZE) };
 
 fn main() {
     let mut values = Vec::new();
@@ -74,8 +72,8 @@ fn main() {
 }
 ```
 
-`new` is unsafe because the allocator cannot verify the storage lifetime,
-exclusivity, or overlap. See its API documentation for the complete contract.
+`new` is unsafe because the allocator cannot verify the region's lifetime or
+that it is its only user. See its API documentation for the complete contract.
 
 ## Direct use and allocator API
 
@@ -95,15 +93,10 @@ The inner `ChunkAllocator` can also be driven directly with `allocate`,
 `deallocate`, and `realloc`. It is not synchronized, so it needs `&mut self`:
 
 ```rust
-// The heap must be at least CHUNK_SIZE-aligned; `PageAligned` ensures that.
-let mut heap = PageAligned::new([0_u8; 16 * CHUNK_SIZE]);
-let mut bitmap = PageAligned::new([0_u8; 16 / 8]);
-// SAFETY: both arrays outlive the allocator and are not used otherwise.
+let mut region = [0_u8; 4096];
+// SAFETY: `region` outlives the allocator and nothing else touches it.
 let mut allocator = unsafe {
-    ChunkAllocator::<CHUNK_SIZE>::new(
-        heap.as_mut_slice(),
-        bitmap.as_mut_slice(),
-    )
+    ChunkAllocator::<256>::new(region.as_mut_ptr(), region.len())
 };
 
 let layout = Layout::from_size_align(64, 8).unwrap();

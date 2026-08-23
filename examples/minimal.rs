@@ -23,33 +23,25 @@ SOFTWARE.
 */
 #![feature(allocator_api)]
 
-use simple_chunk_allocator::{
-    GlobalChunkAllocator, PageAligned, heap, heap_bitmap,
-};
+use simple_chunk_allocator::GlobalChunkAllocator;
 
-/// Page-aligned heap storage (1 MiB).
+/// The allocator type, named once so that the chunk size is stated once.
+/// Without an argument it uses `DEFAULT_CHUNK_SIZE`.
+type Allocator = GlobalChunkAllocator;
+
+/// Backing memory: 1 MiB worth of chunks plus the bitmap that tracks them.
 ///
-/// Without arguments the macros fall back to `DEFAULT_CHUNK_AMOUNT` chunks of
-/// `DEFAULT_CHUNK_SIZE` bytes. Both accept the geometry explicitly, e.g.
-/// `heap!(chunks = 16, chunksize = 256)`.
-static mut HEAP: PageAligned<[u8; 1048576]> = heap!();
-/// One bitmap bit per heap chunk, e.g. `heap_bitmap!(chunks = 16)`.
-static mut HEAP_BITMAP: PageAligned<[u8; 512]> = heap_bitmap!();
+/// The region may start at any address, and the allocator skips up to
+/// `CHUNK_SIZE - 1` bytes to align the first chunk. `required_region_size`
+/// budgets for that, so the 4096 chunks are there in any case.
+const CHUNKS: usize = 4096;
+const REGION_SIZE: usize = CHUNKS * 256 + CHUNKS.div_ceil(8) + (256 - 1);
+static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 
 #[global_allocator]
-// SAFETY: these statics are exclusively owned by `ALLOCATOR`.
-static ALLOCATOR: GlobalChunkAllocator = unsafe {
-    GlobalChunkAllocator::new(
-        core::ptr::slice_from_raw_parts_mut(
-            core::ptr::addr_of_mut!(HEAP).cast(),
-            1048576,
-        ),
-        core::ptr::slice_from_raw_parts_mut(
-            core::ptr::addr_of_mut!(HEAP_BITMAP).cast(),
-            512,
-        ),
-    )
-};
+// SAFETY: `ALLOCATOR` is the only user of `REGION` for the whole program.
+static ALLOCATOR: Allocator =
+    unsafe { Allocator::new((&raw mut REGION).cast(), REGION_SIZE) };
 
 fn main() {
     // The Rust runtime already allocated before `main` was entered, so the

@@ -1,7 +1,7 @@
 [package]
 name = "simple-chunk-allocator"
 description = """
-A nightly-only `no_std` allocator that manages fixed-size chunks in caller-provided static memory.
+A nightly-only `no_std` allocator that manages fixed-size chunks in a single caller-provided memory region.
 """
 version = "0.1.6"
 edition = "2024"

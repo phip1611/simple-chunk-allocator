@@ -40,17 +40,17 @@ pub struct GlobalChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE>(
 );
 
 impl<const CHUNK_SIZE: usize> GlobalChunkAllocator<CHUNK_SIZE> {
-    /// Creates a global allocator over caller-provided backing memory.
+    /// Creates a global allocator over a single caller-provided region.
     ///
     /// # Safety
-    /// `heap` and `bitmap` must meet [`ChunkAllocator::new`] requirements for
-    /// the allocator lifetime.
+    /// `region` and `region_len` must meet [`ChunkAllocator::new`]
+    /// requirements for the allocator lifetime.
     #[inline]
-    pub const unsafe fn new(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
+    pub const unsafe fn new(region: *mut u8, region_len: usize) -> Self {
         // SAFETY: required validity and exclusivity are guaranteed by the
         // caller.
         let inner_alloc =
-            unsafe { ChunkAllocator::<CHUNK_SIZE>::new(heap, bitmap) };
+            unsafe { ChunkAllocator::<CHUNK_SIZE>::new(region, region_len) };
         Self(spin::Mutex::new(inner_alloc))
     }
 
@@ -113,31 +113,16 @@ unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
 /// # Example
 /// ```rust
 /// #![feature(allocator_api)]
-/// use simple_chunk_allocator::{
-///     GlobalChunkAllocator, PageAligned, heap, heap_bitmap,
-/// };
+/// use simple_chunk_allocator::GlobalChunkAllocator;
 ///
-/// const CHUNKS: usize = 16;
-/// const CHUNK_SIZE: usize = 256;
+/// type Allocator = GlobalChunkAllocator<256>;
 ///
-/// static mut HEAP: PageAligned<[u8; CHUNKS * CHUNK_SIZE]> =
-///     heap!(chunks = CHUNKS, chunksize = CHUNK_SIZE);
-/// static mut BITMAP: PageAligned<[u8; CHUNKS / 8]> =
-///     heap_bitmap!(chunks = CHUNKS);
+/// const REGION_SIZE: usize = 16 * 256 + 2 + 255;
+/// static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 ///
-/// // SAFETY: ALLOCATOR exclusively owns both statics for the whole program.
-/// static ALLOCATOR: GlobalChunkAllocator<CHUNK_SIZE> = unsafe {
-///     GlobalChunkAllocator::new(
-///         core::ptr::slice_from_raw_parts_mut(
-///             core::ptr::addr_of_mut!(HEAP).cast(),
-///             CHUNKS * CHUNK_SIZE,
-///         ),
-///         core::ptr::slice_from_raw_parts_mut(
-///             core::ptr::addr_of_mut!(BITMAP).cast(),
-///             CHUNKS / 8,
-///         ),
-///     )
-/// };
+/// // SAFETY: `ALLOCATOR` is the only user of `REGION` for the whole program.
+/// static ALLOCATOR: Allocator =
+///     unsafe { Allocator::new((&raw mut REGION).cast(), REGION_SIZE) };
 ///
 /// // The vector allocates from ALLOCATOR; everything else keeps using the
 /// // registered global allocator.
@@ -161,7 +146,7 @@ unsafe impl<const CHUNK_SIZE: usize> Allocator
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut this = self.0.0.lock();
         ChunkAllocator::allocate(&mut *this, layout).map_err(|error| {
-            log::error!("ChunkAllocatorError: {:?}", error);
+            log::error!("allocation failed: {error:?}");
             AllocError
         })
     }
@@ -199,9 +184,16 @@ unsafe impl<const CHUNK_SIZE: usize> Allocator
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PageAligned;
     use std::time::Instant;
     use std::vec::Vec;
+
+    /// Page-aligned backing memory.
+    ///
+    /// The allocator accepts any alignment, but a chunk-aligned region is the
+    /// only one whose chunk count is exactly `SIZE / CHUNK_SIZE`, which the
+    /// usage assertions below rely on.
+    #[repr(align(4096))]
+    struct Region<const SIZE: usize>([u8; SIZE]);
 
     /// Uses [`GlobalChunkAllocator`] against the Rust Allocator API to test
     /// the underlying [`ChunkAllocator`]. This is like an "integration" test
@@ -210,23 +202,11 @@ mod tests {
     fn test_allocator_with_allocator_api() {
         const CHUNK_COUNT: usize = 8;
         const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-        static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> =
-            PageAligned::new([0; HEAP_SIZE]);
-        static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> =
-            PageAligned::new([0; BITMAP_SIZE]);
-        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
+        const REGION_SIZE: usize = HEAP_SIZE + CHUNK_COUNT.div_ceil(8);
+        static mut REGION: Region<REGION_SIZE> = Region([0; REGION_SIZE]);
+        // SAFETY: the static is exclusively owned by `ALLOCATOR`.
         static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new(
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
-                    HEAP_SIZE,
-                ),
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
-                    BITMAP_SIZE,
-                ),
-            )
+            GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
         };
 
         assert_eq!(0.0, ALLOCATOR.usage());
@@ -269,23 +249,11 @@ mod tests {
     fn test_global_alloc_returns_null_on_out_of_memory() {
         const CHUNK_COUNT: usize = 8;
         const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-        static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> =
-            PageAligned::new([0; HEAP_SIZE]);
-        static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> =
-            PageAligned::new([0; BITMAP_SIZE]);
-        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
+        const REGION_SIZE: usize = HEAP_SIZE + CHUNK_COUNT.div_ceil(8);
+        static mut REGION: Region<REGION_SIZE> = Region([0; REGION_SIZE]);
+        // SAFETY: the static is exclusively owned by `ALLOCATOR`.
         static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new(
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
-                    HEAP_SIZE,
-                ),
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
-                    BITMAP_SIZE,
-                ),
-            )
+            GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
         };
         let layout = Layout::from_size_align(HEAP_SIZE, 1).unwrap();
 
@@ -306,23 +274,11 @@ mod tests {
     fn test_allocator_fast_realloc_works() {
         const CHUNK_COUNT: usize = 32;
         const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-        static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> =
-            PageAligned::new([0; HEAP_SIZE]);
-        static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> =
-            PageAligned::new([0; BITMAP_SIZE]);
-        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
+        const REGION_SIZE: usize = HEAP_SIZE + CHUNK_COUNT.div_ceil(8);
+        static mut REGION: Region<REGION_SIZE> = Region([0; REGION_SIZE]);
+        // SAFETY: the static is exclusively owned by `ALLOCATOR`.
         static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new(
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
-                    HEAP_SIZE,
-                ),
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
-                    BITMAP_SIZE,
-                ),
-            )
+            GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
         };
 
         // I run the allocation N times to measure the duration of it. This way

@@ -34,6 +34,9 @@
 - `AllocatorApiGlue` implements `shrink`, so an allocation that shrinks within
   the chunks it already owns keeps its place instead of being copied.
 - `GlobalChunkAllocator` also forwards `chunk_size` and `min_alignment`.
+- **Breaking:** the allocator takes a single memory region and places its
+  bitmap at the end of it. The separate bitmap parameter is gone, and the
+  region may hold uninitialized content.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

@@ -23,7 +23,6 @@ SOFTWARE.
 */
 //! Module for [`ChunkAllocator`].
 
-use crate::chunk_cache::ChunkCacheEntry;
 use core::alloc::Layout;
 use core::cell::OnceCell;
 use core::error;
@@ -126,20 +125,14 @@ pub struct ChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     region_len: usize,
     /// Derived from `region` on first use; see [`Self::geometry`].
     geometry: OnceCell<Geometry>,
-    /// Contains the next free continuous memory region with a minimum length
-    /// of one chunk. It might happen that this entry is invalid because
-    /// the heap is full or the next chunk after the previous allocation is
-    /// already in use.
-    /// Whether the bitmap has been cleared; see
-    /// [`Self::initialize_bitmap`].
+    /// Whether the bitmap has been cleared; see [`Self::initialize_bitmap`].
     bitmap_is_initialized: bool,
     /// Where the next search starts. Only a hint: the chunk may well be in
     /// use, and the search re-verifies everything it looks at.
     ///
-    /// This optimization mechanism prevents the need to iterate over all
-    /// chunks everytime which can take up to tens of thousands of CPU
-    /// cycles in the worst case (fragmented heap).
-    maybe_next_free_chunk: ChunkCacheEntry,
+    /// Without it every allocation would scan the bitmap from the beginning,
+    /// which costs tens of thousands of cycles on a fragmented heap.
+    next_search_index: usize,
     /// Counts the number of blocks in use.
     chunks_in_use: usize,
 }
@@ -213,11 +206,8 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
                 .expect("caller should pass a non-null region"),
             region_len,
             geometry: OnceCell::new(),
-            // Chunk 0 is CHUNK_SIZE-aligned by construction. The length is the
-            // conservative minimum; the first allocation replaces the hint
-            // with a real one anyway.
-            maybe_next_free_chunk: ChunkCacheEntry::new(0, CHUNK_SIZE, 1),
             bitmap_is_initialized: false,
+            next_search_index: 0,
             chunks_in_use: 0,
         }
     }
@@ -446,7 +436,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
 
         // We hope that the index and its succeeding chunks stored in the cache
         // fits the requested memory region.
-        let start_index = self.maybe_next_free_chunk.index();
+        let start_index = self.next_search_index;
 
         let chunk_count = self.chunk_count();
 
@@ -574,21 +564,13 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         }
         self.chunks_in_use += required_chunks;
 
-        // Only update "maybe_next_free_chunk" if it doesn't already point to a
-        // free location; For example, it could be that it was not used
-        // in this allocation.
-        //
-        // MAKE SURE THIS GETS CALLED AFTER USED CHUNKS ARE MARKED AS SUCH
-        // EARLIER.
-        if !self.chunk_is_free(self.maybe_next_free_chunk.index()) {
-            // at next allocation: continue search at this index
-            let next_index = (index + 1) % self.chunk_count();
-            // - alignment of chunk_size is always guaranteed.
-            // - We do not know yet if the next entry is actually available. We
-            //   just give the algorithm an hint where to start for the next
-            //   search.
-            self.maybe_next_free_chunk =
-                ChunkCacheEntry::new(next_index, CHUNK_SIZE, 1);
+        // Leave the hint alone while it still points at a free chunk: this
+        // allocation may not have touched it. Reading it only makes sense
+        // after the chunks above were marked as used.
+        if !self.chunk_is_free(self.next_search_index) {
+            // The hinted chunk is gone, so point just past what was taken.
+            // Whether that chunk is free is for the next search to find out.
+            self.next_search_index = (index + 1) % self.chunk_count();
         }
 
         let heap_ptr = self.chunk_index_to_ptr(index);
@@ -629,8 +611,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         // Allocating and freeing a buffer of the same shape over and over is
         // the common case, and it only stays cheap if the search starts at the
         // region that was just released instead of walking the heap again.
-        self.maybe_next_free_chunk =
-            ChunkCacheEntry::new(index, layout.align(), freed_chunks);
+        self.next_search_index = index;
     }
 
     /// Resizes an allocation from this allocator.
@@ -955,12 +936,10 @@ mod tests {
             alloc.find_free_continuous_memory_region(1, 4096).unwrap()
         );
         alloc.mark_chunk_as_used(0);
-        alloc.maybe_next_free_chunk =
-            ChunkCacheEntry::new(1, DEFAULT_CHUNK_SIZE, 1);
+        alloc.next_search_index = 1;
 
         assert_eq!(1, alloc.find_free_continuous_memory_region(1, 1).unwrap());
-        alloc.maybe_next_free_chunk =
-            ChunkCacheEntry::new(2, DEFAULT_CHUNK_SIZE, 1);
+        alloc.next_search_index = 2;
         assert_eq!(
             // 16: 256*16 = 4096 => second page in heap mem that consists of
             // two pages
@@ -969,8 +948,7 @@ mod tests {
         );
         alloc.mark_chunk_as_used(16);
         // makes sure the next search
-        alloc.maybe_next_free_chunk =
-            ChunkCacheEntry::new(17, DEFAULT_CHUNK_SIZE, 1);
+        alloc.next_search_index = 17;
 
         assert!(
             alloc.find_free_continuous_memory_region(1, 4096).is_err(),

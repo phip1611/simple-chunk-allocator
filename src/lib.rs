@@ -132,7 +132,6 @@ SOFTWARE.
 #![feature(slice_ptr_get)]
 
 mod allocator;
-mod chunk_cache;
 mod global;
 
 pub use allocator::*;

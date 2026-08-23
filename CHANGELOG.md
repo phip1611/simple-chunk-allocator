@@ -42,6 +42,8 @@
 - **Breaking:** removed the `heap!` and `heap_bitmap!` macros, `PageAligned`,
   and `DEFAULT_CHUNK_AMOUNT`. Use `required_region_size` to size a region, and
   a `#[repr(align(...))]` wrapper if a specific alignment is wanted.
+- **Breaking:** `usage` returns a ratio between `0.0` and `1.0` instead of a
+  percentage rounded to two decimals. This drops the `libm` dependency.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

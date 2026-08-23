@@ -217,12 +217,12 @@ mod tests {
             DEFAULT_CHUNK_SIZE * 2,
             ALLOCATOR.allocator_api_glue(),
         );
-        assert_eq!(25.0, ALLOCATOR.usage());
+        assert_eq!(0.25, ALLOCATOR.usage());
         let vec2 = Vec::<u8, _>::with_capacity_in(
             DEFAULT_CHUNK_SIZE * 6,
             ALLOCATOR.allocator_api_glue(),
         );
-        assert_eq!(100.0, ALLOCATOR.usage());
+        assert_eq!(1.0, ALLOCATOR.usage());
 
         // I can't test it like this :( Because of the design of the types of
         // the Rust standard library, they fail if an allocation can't
@@ -236,12 +236,12 @@ mod tests {
         //assert!(panic_oom.is_err(), "allocator is out of memory");
 
         drop(vec1);
-        assert_eq!(75.0, ALLOCATOR.usage());
+        assert_eq!(0.75, ALLOCATOR.usage());
         let vec3 = Vec::<u8, _>::with_capacity_in(
             DEFAULT_CHUNK_SIZE,
             ALLOCATOR.allocator_api_glue(),
         );
-        assert_eq!(87.5, ALLOCATOR.usage());
+        assert_eq!(0.875, ALLOCATOR.usage());
 
         drop(vec2);
         drop(vec3);

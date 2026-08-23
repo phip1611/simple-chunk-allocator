@@ -316,15 +316,16 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         self.geometry().chunk_count
     }
 
-    /// Returns the current memory usage in percentage rounded to two decimal
-    /// places.
+    /// Returns the share of chunks in use, between `0.0` and `1.0`.
+    ///
+    /// The zero case is special-cased because an allocator without capacity
+    /// would otherwise divide by zero.
     #[inline]
     pub fn usage(&self) -> f32 {
         if self.chunks_in_use == 0 {
             0.0
         } else {
-            let ratio = self.chunks_in_use as f32 / self.chunk_count() as f32;
-            libm::roundf(ratio * 10000.0) / 100.0
+            self.chunks_in_use as f32 / self.chunk_count() as f32
         }
     }
 
@@ -535,9 +536,9 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
 
         if index.is_err() {
             log::warn!(
-                "Out of memory for {layout:?}; usage: {}%/{} byte",
-                self.usage(),
-                ((self.usage() * self.capacity() as f32) as u64)
+                "Out of memory for {layout:?}; {}/{} chunks in use",
+                self.chunks_in_use,
+                self.chunk_count()
             );
         }
 
@@ -1177,7 +1178,7 @@ mod tests {
             allocations.push(allocator.allocate(layout).unwrap());
         }
         assert_eq!(allocator.allocate(layout), Err(OutOfMemory));
-        assert_eq!(allocator.usage(), 100.0);
+        assert_eq!(allocator.usage(), 1.0);
 
         let ptr = allocations.pop().unwrap().cast();
         // SAFETY: `ptr` is the most recent live allocation for `layout`.
@@ -1227,7 +1228,7 @@ mod tests {
         };
         record.fill();
         // 128 byte occupy a single chunk.
-        assert_eq!(allocator.usage(), 6.25);
+        assert_eq!(allocator.usage(), 0.0625);
 
         // 600 byte do not fit into the occupied chunk, so this moves the
         // allocation to a region of three chunks and frees the old one.
@@ -1244,7 +1245,7 @@ mod tests {
         // carry the pattern. The remaining bytes of the larger allocation are
         // uninitialized, so the check stops at the old size.
         grown_record.assert_pattern(old_layout.size());
-        assert_eq!(allocator.usage(), 18.75);
+        assert_eq!(allocator.usage(), 0.1875);
 
         // Shrinking stays in place, but the two chunks that are no longer
         // backed by the allocation must be released here. Before, they stayed
@@ -1255,7 +1256,7 @@ mod tests {
                 .unwrap();
         assert_eq!(zero.len(), 0);
         // A zero-size allocation still owns one chunk; see `normalize_layout!`.
-        assert_eq!(allocator.usage(), 6.25);
+        assert_eq!(allocator.usage(), 0.0625);
 
         let zero_layout = Layout::from_size_align(0, 1).unwrap();
         // SAFETY: the zero-size result retains the same live allocation.

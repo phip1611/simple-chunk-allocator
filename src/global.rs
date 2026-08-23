@@ -164,6 +164,47 @@ pub struct AllocatorApiGlue<'a, const CHUNK_SIZE: usize>(
     &'a GlobalChunkAllocator<CHUNK_SIZE>,
 );
 
+impl<const CHUNK_SIZE: usize> AllocatorApiGlue<'_, CHUNK_SIZE> {
+    /// Resizes an allocation, in place where the chunks it already owns are
+    /// enough.
+    ///
+    /// Shared by [`Allocator::grow`] and [`Allocator::shrink`], which differ
+    /// only in the direction the caller promises to resize in.
+    ///
+    /// # Safety
+    /// `ptr` must be a live allocation from this allocator, and `old_layout`
+    /// must be the layout it was made with.
+    #[inline]
+    unsafe fn resize(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // `ChunkAllocator::realloc` keeps the original alignment, so a
+        // stricter one cannot be served. Refuse it rather than panic: an
+        // allocator that unwinds is far harder to use than one that reports
+        // failure, and the trait allows reporting it.
+        if new_layout.align() > old_layout.align() {
+            error!(
+                "cannot resize from alignment {} to {}",
+                old_layout.align(),
+                new_layout.align()
+            );
+            return Err(AllocError);
+        }
+
+        let mut this = self.0.0.lock();
+        // SAFETY: the caller guarantees a live allocation and its layout.
+        unsafe { this.realloc(ptr, old_layout, new_layout.size()) }.map_err(
+            |error| {
+                error!("resize failed: {error:?}");
+                AllocError
+            },
+        )
+    }
+}
+
 // SAFETY: methods delegate to the mutex-protected `GlobalChunkAllocator`.
 unsafe impl<const CHUNK_SIZE: usize> Allocator
     for AllocatorApiGlue<'_, CHUNK_SIZE>
@@ -192,26 +233,23 @@ unsafe impl<const CHUNK_SIZE: usize> Allocator
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        // `ChunkAllocator::realloc` keeps the original alignment, so a
-        // stricter one cannot be served. Refuse it rather than panic: an
-        // allocator that unwinds out of `grow` is far harder to use than one
-        // that reports failure, and the trait allows reporting it.
-        if new_layout.align() > old_layout.align() {
-            error!(
-                "cannot grow from alignment {} to {}",
-                old_layout.align(),
-                new_layout.align()
-            );
-            return Err(AllocError);
-        }
-
-        let mut this = self.0.0.lock();
         // SAFETY: `Allocator::grow` requires a valid allocation from `self`.
-        unsafe { this.realloc(ptr, old_layout, new_layout.size()) }.map_err(
-            |err| {
-                error!("realloc error: {err:?}");
-                AllocError
-            },
-        )
+        unsafe { self.resize(ptr, old_layout, new_layout) }
+    }
+
+    /// Overrides the default, which always allocates, copies and frees.
+    ///
+    /// An allocation that shrinks within the chunks it already owns keeps
+    /// them, so the copy is avoidable; only the chunks behind the new size are
+    /// released. Rounding up to whole chunks makes that the common case.
+    #[inline]
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // SAFETY: `Allocator::shrink` requires a valid allocation from `self`.
+        unsafe { self.resize(ptr, old_layout, new_layout) }
     }
 }

@@ -48,6 +48,8 @@
   `min_alignment`.
 - `AllocatorApiGlue::grow` reports an alignment it cannot serve as `AllocError`
   instead of panicking.
+- `AllocatorApiGlue` implements `shrink`, so an allocation that shrinks within
+  the chunks it already owns keeps its place instead of being copied.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

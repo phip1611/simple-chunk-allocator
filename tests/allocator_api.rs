@@ -31,6 +31,7 @@ SOFTWARE.
 #![feature(allocator_api)]
 
 use core::alloc::{Allocator, GlobalAlloc, Layout};
+use core::{ptr, slice};
 use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
 use std::thread;
 
@@ -191,10 +192,11 @@ fn growing_a_collection_moves_it_only_when_it_has_to() {
 }
 
 /// An allocation cannot gain alignment on the way: the underlying `realloc`
-/// keeps the one it was made with. `grow` has to report that instead of
-/// unwinding, which a caller in a `no_std` binary could not recover from.
+/// keeps the one it was made with. Both resize directions have to report that
+/// instead of unwinding, which a caller in a `no_std` binary could not
+/// recover from.
 #[test]
-fn grow_refuses_an_alignment_it_cannot_provide() {
+fn resizing_refuses_an_alignment_it_cannot_provide() {
     static mut REGION: StaticRegion<REGION_SIZE> =
         StaticRegion([0; REGION_SIZE]);
     // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
@@ -266,5 +268,64 @@ fn concurrent_allocations_do_not_overlap() {
         }
     });
 
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// Shrinking inside the chunks an allocation already owns keeps it where it
+/// is and hands back the chunks behind it. The default `shrink` of the
+/// `Allocator` trait would allocate, copy and free instead, which for a chunk
+/// allocator is the expensive way to do nothing.
+#[test]
+fn shrinking_releases_chunks_without_moving_the_allocation() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    let glue = ALLOCATOR.allocator_api_glue();
+    let old = Layout::from_size_align(DEFAULT_CHUNK_SIZE * 4, 1).unwrap();
+    let ptr = glue.allocate(old).unwrap().cast::<u8>();
+    assert_eq!(ALLOCATOR.usage(), 4.0 / CHUNK_COUNT as f32);
+
+    // SAFETY: the allocation is live and `old.size()` byte long.
+    unsafe { ptr::write_bytes(ptr.as_ptr(), 0xa5, old.size()) };
+
+    let new = Layout::from_size_align(DEFAULT_CHUNK_SIZE, 1).unwrap();
+    // SAFETY: `ptr` is live, made for `old`, and `new` is smaller.
+    let shrunk = unsafe { glue.shrink(ptr, old, new) }.unwrap();
+    assert_eq!(
+        shrunk.cast::<u8>(),
+        ptr,
+        "the allocation still fits where it is and must not move"
+    );
+    assert_eq!(
+        ALLOCATOR.usage(),
+        1.0 / CHUNK_COUNT as f32,
+        "the three chunks behind the new size must be free again"
+    );
+
+    // SAFETY: the retained chunk is live and was written above.
+    let kept = unsafe {
+        slice::from_raw_parts(shrunk.cast::<u8>().as_ptr(), new.size())
+    };
+    assert!(kept.iter().all(|byte| *byte == 0xa5));
+
+    // Everything but the retained chunk has to be free and contiguous again,
+    // which only holds if the released chunks really went back.
+    let rest =
+        Layout::from_size_align(DEFAULT_CHUNK_SIZE * (CHUNK_COUNT - 1), 1)
+            .unwrap();
+    let refill = glue.allocate(rest).unwrap().cast::<u8>();
+    assert_eq!(ALLOCATOR.usage(), 1.0);
+    assert!(kept.iter().all(|byte| *byte == 0xa5));
+
+    // SAFETY: both are live allocations paired with their layouts.
+    unsafe {
+        glue.deallocate(ptr, new);
+        glue.deallocate(refill, rest);
+    }
     assert_eq!(ALLOCATOR.usage(), 0.0);
 }

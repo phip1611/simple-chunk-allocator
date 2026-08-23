@@ -49,8 +49,6 @@ pub enum ChunkAllocatorError {
     BadHeapMemory,
     /// The bitmap does not contain exactly one bit per heap chunk.
     BadBitmapMemory,
-    /// The chunk size is zero or not a power of two.
-    BadChunkSize,
     /// No free, suitably aligned run of chunks can satisfy the request.
     OutOfMemory,
 }
@@ -98,6 +96,16 @@ unsafe impl<'a, const CHUNK_SIZE: usize> Send
 }
 
 impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
+    /// Rejects an invalid chunk size when the allocator is instantiated.
+    ///
+    /// A power of two is what makes every chunk `CHUNK_SIZE`-aligned once the
+    /// heap base is. Zero is covered as well, because `0` is not a power of
+    /// two.
+    const VALIDATE_CHUNK_SIZE: () = assert!(
+        CHUNK_SIZE.is_power_of_two(),
+        "CHUNK_SIZE must be a power of two"
+    );
+
     /// Returns the used chunk size.
     #[inline]
     pub const fn chunk_size(&self) -> usize {
@@ -119,12 +127,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
         heap: &'a mut [u8],
         bitmap: &'a mut [u8],
     ) -> Result<Self, ChunkAllocatorError> {
-        if CHUNK_SIZE == 0 {
-            return Err(ChunkAllocatorError::BadChunkSize);
-        }
-        if !CHUNK_SIZE.is_power_of_two() {
-            return Err(ChunkAllocatorError::BadChunkSize);
-        }
+        let () = Self::VALIDATE_CHUNK_SIZE;
 
         if heap.is_empty() || !heap.len().is_multiple_of(CHUNK_SIZE) {
             return Err(ChunkAllocatorError::BadHeapMemory);
@@ -175,11 +178,7 @@ impl<'a, const CHUNK_SIZE: usize> ChunkAllocator<'a, CHUNK_SIZE> {
     /// checked during const evaluation.
     #[inline]
     pub const fn new_const(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
-        assert!(CHUNK_SIZE > 0, "chunk size must not be zero!");
-        assert!(
-            CHUNK_SIZE.is_power_of_two(),
-            "chunk size must be a power of two!"
-        );
+        let () = Self::VALIDATE_CHUNK_SIZE;
 
         assert!(
             !heap.is_empty() && heap.len().is_multiple_of(CHUNK_SIZE),
@@ -832,59 +831,22 @@ mod tests {
         }
     }
 
-    /// Initializes the allocator with illegal chunk sizes.
+    /// An invalid `CHUNK_SIZE` is a compile-time error now, so only the
+    /// bitmap size remains as a runtime failure of the constructors.
     #[test]
-    fn test_new_fails_illegal_chunk_size() {
+    fn test_new_rejects_mismatching_bitmap() {
         let (mut heap, mut heap_bitmap) =
             helpers::create_heap_and_bitmap_vectors();
 
         let msg =
-            "expected panic because of bad chunk size (is 0 which is illegal)";
-        assert!(
-            matches!(
-                ChunkAllocator::<0>::new(&mut heap, &mut heap_bitmap)
-                    .unwrap_err(),
-                ChunkAllocatorError::BadChunkSize
-            ),
-            "{}",
-            msg
-        );
-        std::panic::catch_unwind(|| {
-            let (mut heap, mut heap_bitmap) =
-                helpers::create_heap_and_bitmap_vectors();
-            ChunkAllocator::<0>::new_const(&mut heap, &mut heap_bitmap);
-        })
-        .expect_err(msg);
-        // ------------------------------------------------------------------------------
-        let msg =
-            "expected panic because of a bad chunk size (not a power of 2)";
-        assert!(
-            matches!(
-                ChunkAllocator::<3>::new(&mut heap, &mut heap_bitmap)
-                    .unwrap_err(),
-                ChunkAllocatorError::BadChunkSize
-            ),
-            "{}",
-            msg
-        );
-        std::panic::catch_unwind(|| {
-            let (mut heap, mut heap_bitmap) =
-                helpers::create_heap_and_bitmap_vectors();
-            ChunkAllocator::<3>::new_const(&mut heap, &mut heap_bitmap);
-        })
-        .expect_err(msg);
-
-        // ------------------------------------------------------------------------------
-        let msg =
-            "expected panic because the bitmap cannot cover all heap chunks";
+            "expected failure because the bitmap cannot cover all heap chunks";
         assert!(
             matches!(
                 ChunkAllocator::<512>::new(&mut heap, &mut heap_bitmap)
                     .unwrap_err(),
                 ChunkAllocatorError::BadBitmapMemory
             ),
-            "{}",
-            msg
+            "{msg}"
         );
         std::panic::catch_unwind(|| {
             let (mut heap, mut heap_bitmap) =
@@ -893,16 +855,14 @@ mod tests {
         })
         .expect_err(msg);
 
-        // ------------------------------------------------------------------------------
-        let msg = "expected panic because of bad bitmap memory";
+        let msg = "expected failure because the bitmap is far too small";
         assert!(
             matches!(
                 ChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(&mut heap, &mut [0])
                     .unwrap_err(),
                 ChunkAllocatorError::BadBitmapMemory
             ),
-            "{}",
-            msg
+            "{msg}"
         );
         std::panic::catch_unwind(|| {
             let (mut heap, _) = helpers::create_heap_and_bitmap_vectors();

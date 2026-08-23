@@ -5,6 +5,8 @@
 - All UB fixed.
 - Fixed some bugs
 - Improved documentation
+- **Breaking:** an invalid `CHUNK_SIZE` is a compile error instead of a
+  runtime one. `ChunkAllocatorError::BadChunkSize` is removed.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

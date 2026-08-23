@@ -25,7 +25,9 @@ SOFTWARE.
 
 use crate::chunk_cache::ChunkCacheEntry;
 use core::alloc::Layout;
-use core::cell::Cell;
+use core::cell::{Cell, OnceCell};
+use core::error;
+use core::fmt;
 use core::ptr::NonNull;
 
 /// Zero sized types may trigger this; according to the Rust doc of the
@@ -41,19 +43,32 @@ macro_rules! normalize_layout {
     };
 }
 
-/// Errors returned when creating or allocating from a [`ChunkAllocator`].
-#[derive(Debug, Copy, Clone)]
-pub enum ChunkAllocatorError {
-    /// The heap is empty, misaligned, or has an incompatible length.
-    BadHeapMemory,
-    /// The bitmap does not contain exactly one bit per heap chunk.
-    BadBitmapMemory,
-    /// No free, suitably aligned run of chunks can satisfy the request.
-    OutOfMemory,
+/// No free, suitably aligned run of chunks can satisfy a request.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct OutOfMemory;
+
+impl fmt::Display for OutOfMemory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("no free run of chunks satisfies the request")
+    }
 }
+
+impl error::Error for OutOfMemory {}
 
 /// Default chunk size: 256 bytes.
 pub const DEFAULT_CHUNK_SIZE: usize = 256;
+
+/// Where the chunks sit inside the caller's heap region.
+///
+/// This cannot be computed by the constructor: the padding depends on the
+/// region's address, and const evaluation cannot observe one.
+#[derive(Debug, Clone, Copy)]
+struct Geometry {
+    /// Distance from the region start to the first chunk.
+    heap_offset: usize,
+    /// Number of chunks that fit into what is left.
+    chunk_count: usize,
+}
 
 /// Allocates from caller-provided storage in fixed-size chunks.
 ///
@@ -61,14 +76,14 @@ pub const DEFAULT_CHUNK_SIZE: usize = 256;
 /// size and search work; a smaller size reduces internal fragmentation.
 #[derive(Debug)]
 pub struct ChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
-    /// Backing memory for heap.
+    /// Backing memory for the heap, of any alignment.
     heap: NonNull<u8>,
     /// Length of `heap` in bytes.
     heap_len: usize,
     /// Backing memory for bookkeeping.
     bitmap: NonNull<u8>,
-    /// Length of `bitmap` in bytes.
-    bitmap_len: usize,
+    /// Derived from `heap` on first use; see [`Self::geometry`].
+    geometry: OnceCell<Geometry>,
     /// Helper to do some initial initialization on the first runtime
     /// invocation.
     is_first_alloc: Cell<bool>,
@@ -114,19 +129,17 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
 
     /// Creates an allocator over caller-provided backing memory.
     ///
-    /// The heap must be non-empty, `CHUNK_SIZE`-aligned, and hold a multiple
-    /// of eight chunks; the bitmap must hold exactly one bit per chunk. All of
-    /// this is checked here and panics on violation, which turns into a
-    /// compile error when the allocator is built in a const context. The
-    /// alignment is the exception: const evaluation cannot see an address, so
-    /// it is verified on the first allocation instead [0].
-    ///
-    /// [0]: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
+    /// How many chunks fit follows from the heap length, so a heap of any
+    /// length and any alignment is accepted: the allocator aligns the first
+    /// chunk itself, at a cost of up to `CHUNK_SIZE - 1` bytes. The bitmap
+    /// must hold one bit per chunk, which is checked here against the largest
+    /// chunk count the heap could yield, and panics on violation - a compile
+    /// error in the const context this constructor exists for.
     ///
     /// # Safety
     /// `heap` and `bitmap` must be valid, non-null and non-overlapping for as
     /// long as the allocator lives, and it must be their only user for that
-    /// time. Nothing in the type system enforces this any more.
+    /// time.
     #[inline]
     pub const unsafe fn new(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
         let () = Self::VALIDATE_CHUNK_SIZE;
@@ -134,48 +147,65 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         // SAFETY: validity and exclusivity are guaranteed by the caller.
         let (heap, bitmap) = unsafe { (&mut *heap, &mut *bitmap) };
 
+        // The alignment padding can only lower the chunk count, so checking
+        // the bitmap against the unpadded one is both const-evaluable and
+        // sufficient.
         assert!(
-            !heap.is_empty() && heap.len().is_multiple_of(CHUNK_SIZE),
-            "heap must be not empty and a multiple of the chunk size"
-        );
-
-        let chunk_count = heap.len() / CHUNK_SIZE;
-        assert!(
-            chunk_count.is_multiple_of(8),
-            "chunk count must be a multiple of 8"
-        );
-        assert!(
-            chunk_count == bitmap.len() * 8,
-            "the bitmap must cover the amount of chunks exactly"
+            bitmap.len() >= (heap.len() / CHUNK_SIZE).div_ceil(8),
+            "the bitmap must hold one bit per heap chunk"
         );
 
         let heap_len = heap.len();
-        let bitmap_len = bitmap.len();
         Self {
             heap: NonNull::new(heap.as_mut_ptr()).unwrap(),
             heap_len,
             bitmap: NonNull::new(bitmap.as_mut_ptr()).unwrap(),
-            bitmap_len,
+            geometry: OnceCell::new(),
             is_first_alloc: Cell::new(true),
             // The real alignment is unknown until the first allocation, so the
             // hint starts at the weakest possible value.
-            maybe_next_free_chunk: ChunkCacheEntry::new(0, 1, chunk_count),
+            maybe_next_free_chunk: ChunkCacheEntry::new(0, 1, 1),
             chunks_in_use: 0,
         }
     }
 
-    /// Capacity in bytes of the allocator.
+    /// Returns the heap layout, deriving it on the first call.
     #[inline]
-    pub const fn capacity(&self) -> usize {
-        self.heap_len
+    fn geometry(&self) -> Geometry {
+        *self.geometry.get_or_init(|| {
+            // The padding can exceed the heap, and `align_offset` may even
+            // give up and return `usize::MAX`. Clamping keeps every derived
+            // pointer inside the region.
+            let heap_offset = self
+                .heap
+                .as_ptr()
+                .align_offset(CHUNK_SIZE)
+                .min(self.heap_len);
+            Geometry {
+                heap_offset,
+                chunk_count: (self.heap_len - heap_offset) / CHUNK_SIZE,
+            }
+        })
+    }
+
+    /// Returns the pointer to the first chunk.
+    #[inline(always)]
+    fn heap_ptr(&self) -> *mut u8 {
+        // SAFETY: the offset points into the heap region by construction.
+        unsafe { self.heap.as_ptr().add(self.geometry().heap_offset) }
+    }
+
+    /// Usable capacity in bytes, i.e. without any padding the allocator had
+    /// to skip to align the first chunk.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.chunk_count() * CHUNK_SIZE
     }
 
     /// Returns number of chunks.
     #[inline]
-    pub const fn chunk_count(&self) -> usize {
-        // size is a multiple of CHUNK_SIZE;
-        // ensured in new()
-        self.capacity() / CHUNK_SIZE
+    pub fn chunk_count(&self) -> usize {
+        self.geometry().chunk_count
     }
 
     /// Returns the current memory usage in percentage rounded to two decimal
@@ -206,7 +236,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
         // SAFETY: `byte_i` is within the validated bitmap capacity.
         let relevant_bit =
-            unsafe { (*self.bitmap.as_ptr().add(byte_i) >> bit) & 1 };
+            unsafe { (*self.bitmap_ptr().add(byte_i) >> bit) & 1 };
         relevant_bit == 0
     }
 
@@ -224,7 +254,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         let (byte_i, bit) = self.chunk_index_to_bitmap_indices(chunk_index);
         // xor => keep all bits, except bitflip at relevant position
         // SAFETY: `byte_i` is within the validated bitmap capacity.
-        unsafe { *self.bitmap.as_ptr().add(byte_i) ^= 1 << bit };
+        unsafe { *self.bitmap_ptr().add(byte_i) ^= 1 << bit };
     }
 
     /// Marks a chunk as free, i.e. write a 0 into the bitmap at the right
@@ -242,9 +272,15 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         // xor => keep all bits, except bitflip at relevant position
         // SAFETY: `byte_i` is within the validated bitmap capacity.
         unsafe {
-            let byte = self.bitmap.as_ptr().add(byte_i);
+            let byte = self.bitmap_ptr().add(byte_i);
             *byte ^= 1 << bit;
         }
+    }
+
+    /// Returns the pointer to the first bitmap byte.
+    #[inline(always)]
+    const fn bitmap_ptr(&self) -> *mut u8 {
+        self.bitmap.as_ptr()
     }
 
     /// Returns the indices into the bitmap array of a given chunk index.
@@ -272,13 +308,13 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
     ///   guarantees that it is a power of two.
     #[inline(always)]
     fn find_free_continuous_memory_region(
-        &mut self,
+        &self,
         chunk_num_request: usize,
         alignment: usize,
-    ) -> Result<usize, ChunkAllocatorError> {
+    ) -> Result<usize, OutOfMemory> {
         if chunk_num_request > self.chunk_count() {
             // out of memory
-            return Err(ChunkAllocatorError::OutOfMemory);
+            return Err(OutOfMemory);
         }
 
         // We hope that the index and its succeeding chunks stored in the cache
@@ -309,10 +345,9 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
                     return None;
                 }
 
-                // Does the heap address has the right alignment to fulfill the
-                // request? SAFETY: `chunk_index` is within the
-                // allocator's heap.
-                let ptr = unsafe { self.chunk_index_to_ptr(chunk_index) };
+                // Does the chunk sit at an address that satisfies the
+                // requested alignment?
+                let ptr = self.chunk_index_to_ptr(chunk_index);
                 if ptr.align_offset(alignment) != 0 {
                     return None;
                 }
@@ -339,28 +374,28 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
             })
             .next()
             // OK or out of memory
-            .ok_or(ChunkAllocatorError::OutOfMemory)
+            .ok_or(OutOfMemory)
     }
 
     /// Returns the pointer to the beginning of the chunk.
     #[inline(always)]
-    unsafe fn chunk_index_to_ptr(&mut self, chunk_index: usize) -> *mut u8 {
+    fn chunk_index_to_ptr(&self, chunk_index: usize) -> *mut u8 {
         debug_assert!(
             chunk_index < self.chunk_count(),
             "chunk_index out of range!"
         );
         // SAFETY: `chunk_index` is bounded by `chunk_count`.
-        unsafe { self.heap.as_ptr().add(chunk_index * CHUNK_SIZE) }
+        unsafe { self.heap_ptr().add(chunk_index * CHUNK_SIZE) }
     }
 
     /// Returns the chunk index of the given pointer (which points to the
     /// beginning of a chunk).
     #[inline(always)]
     unsafe fn ptr_to_chunk_index(&self, ptr: *const u8) -> usize {
-        let heap_begin_inclusive = self.heap.as_ptr().cast_const();
-        // SAFETY: `heap_len` is the length of the backing allocation.
+        let heap_begin_inclusive = self.heap_ptr().cast_const();
+        // SAFETY: `capacity` is the length of the chunk area.
         let heap_end_exclusive =
-            unsafe { self.heap.as_ptr().add(self.heap_len) };
+            unsafe { self.heap_ptr().add(self.capacity()) };
         debug_assert!(
             heap_begin_inclusive <= ptr && ptr < heap_end_exclusive,
             "pointer {ptr:?} is outside the allocator's backing storage \
@@ -377,41 +412,28 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         size.div_ceil(CHUNK_SIZE)
     }
 
-    /// Performs initialization steps on the first allocation.
-    /// - checks heap memory (alignment etc) because this can't be done during
-    ///   const new initialization
-    /// - zeroes the bitmap
-    fn init(&mut self) -> Result<(), ChunkAllocatorError> {
+    /// Zeroes the bitmap on the first allocation.
+    ///
+    /// The caller's memory may hold anything, so the bits have to be cleared
+    /// before they are read as chunk state. This cannot happen in the
+    /// constructor, which is const and cannot write through a pointer.
+    fn init(&mut self) {
         self.is_first_alloc.replace(false);
-        // Zero bitmap
-        // SAFETY: `bitmap` points to `bitmap_len` bytes of exclusively owned
-        // storage.
+        // SAFETY: `bitmap` points to at least this many bytes of exclusively
+        // owned storage, which the constructor checked.
         unsafe {
-            core::ptr::write_bytes(self.bitmap.as_ptr(), 0, self.bitmap_len)
+            core::ptr::write_bytes(
+                self.bitmap_ptr(),
+                0,
+                self.chunk_count().div_ceil(8),
+            )
         };
-
-        if self.heap.as_ptr().align_offset(4096) != 0 && CHUNK_SIZE < 4096 {
-            log::debug!(
-                "Page-aligned backing memory is recommended for the heap."
-            );
-        }
-
-        // this can't be done in const new constructor
-        // see: https://github.com/rust-lang/rust/issues/90962#issuecomment-1064148248
-        if self.heap.as_ptr().align_offset(self.min_alignment()) != 0 {
-            log::error!(
-                "The heap must be CHUNK_SIZE-aligned; page alignment is recommended."
-            );
-            Err(ChunkAllocatorError::BadHeapMemory)
-        } else {
-            // Now update; we checked the minimum alignment
-            self.maybe_next_free_chunk = ChunkCacheEntry::new(
-                self.maybe_next_free_chunk.index(),
-                self.min_alignment(),
-                self.maybe_next_free_chunk.chunk_count(),
-            );
-            Ok(())
-        }
+        // Now that the chunks are placed, their alignment is known.
+        self.maybe_next_free_chunk = ChunkCacheEntry::new(
+            self.maybe_next_free_chunk.index(),
+            CHUNK_SIZE,
+            self.chunk_count().max(1),
+        );
     }
 
     /// Allocates memory according to the specific layout.
@@ -421,10 +443,10 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
     pub fn allocate(
         &mut self,
         layout: Layout,
-    ) -> Result<NonNull<[u8]>, ChunkAllocatorError> {
+    ) -> Result<NonNull<[u8]>, OutOfMemory> {
         log::trace!("called allocate");
         if self.is_first_alloc.get() {
-            self.init()?;
+            self.init();
         }
 
         let layout = normalize_layout!(layout);
@@ -469,8 +491,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
                 ChunkCacheEntry::new(next_index, CHUNK_SIZE, 1);
         }
 
-        // SAFETY: `index` was returned from the in-bounds chunk search.
-        let heap_ptr = unsafe { self.chunk_index_to_ptr(index) };
+        let heap_ptr = self.chunk_index_to_ptr(index);
         log::trace!(
             "alloc: layout={layout:?}, ptr={heap_ptr:?}, #chunks={}",
             required_chunks
@@ -544,7 +565,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_size: usize,
-    ) -> Result<NonNull<[u8]>, ChunkAllocatorError> {
+    ) -> Result<NonNull<[u8]>, OutOfMemory> {
         log::trace!("called realloc");
 
         // zero sized types may trigger this; according to the Rust doc of the
@@ -777,27 +798,32 @@ mod tests {
         }
     }
 
-    /// The constructor is the only place that can reject a bad heap/bitmap
-    /// geometry. It panics instead of returning an error so that the mistake
-    /// becomes a compile error in the const context it is meant for.
+    /// A heap of any length and any alignment is fine now; only a bitmap too
+    /// small to describe the chunks is left for the constructor to reject.
+    /// It panics rather than returning an error, so that the mistake becomes
+    /// a compile error in the const context it is meant for.
     #[test]
-    fn test_new_rejects_bad_geometry() {
+    fn test_new_rejects_a_bitmap_that_is_too_small() {
         const CS: usize = DEFAULT_CHUNK_SIZE;
-        let cases = [
-            (0, 0, "empty heap"),
-            (8 * CS + 1, 1, "heap length is not a multiple of CHUNK_SIZE"),
-            (4 * CS, 1, "chunk count is not a multiple of eight"),
-            (8 * CS, 2, "bitmap covers more chunks than the heap has"),
-        ];
 
-        for (heap_size, bitmap_size, case) in cases {
+        // Accepted: lengths that are not a multiple of the chunk size, and
+        // chunk counts that are not a multiple of eight.
+        for (heap_size, bitmap_size) in
+            [(0, 0), (8 * CS + 1, 2), (4 * CS, 1), (13 * CS, 2)]
+        {
+            let mut heap = vec![0_u8; heap_size];
+            let mut bitmap = vec![0_u8; bitmap_size];
+            let _alloc = helpers::allocator_over::<CS>(&mut heap, &mut bitmap);
+        }
+
+        for (heap_size, bitmap_size) in [(8 * CS, 0), (9 * CS, 1)] {
             std::panic::catch_unwind(move || {
                 let mut heap = vec![0_u8; heap_size];
                 let mut bitmap = vec![0_u8; bitmap_size];
                 let _alloc =
                     helpers::allocator_over::<CS>(&mut heap, &mut bitmap);
             })
-            .expect_err(case);
+            .expect_err("bitmap too small for the heap");
         }
     }
 
@@ -887,9 +913,9 @@ mod tests {
     fn test_chunk_index_to_ptr() {
         let (mut heap, mut heap_bitmap) =
             helpers::create_heap_and_bitmap_vectors();
-        let heap_ptr = heap.as_ptr();
-        let mut alloc: ChunkAllocator =
+        let alloc: ChunkAllocator =
             helpers::allocator_over(&mut heap, &mut heap_bitmap);
+        let heap_ptr = alloc.heap_ptr();
 
         // SAFETY: all computed pointers remain within `heap`.
         unsafe {
@@ -1039,10 +1065,7 @@ mod tests {
         for _ in 0..8 {
             allocations.push(allocator.allocate(layout).unwrap());
         }
-        assert!(matches!(
-            allocator.allocate(layout),
-            Err(ChunkAllocatorError::OutOfMemory)
-        ));
+        assert!(matches!(allocator.allocate(layout), Err(OutOfMemory)));
         assert_eq!(allocator.usage(), 100.0);
 
         let ptr = allocations.pop().unwrap().cast();
@@ -1201,12 +1224,7 @@ mod tests {
                             allocation.fill();
                             live.push(allocation);
                         }
-                        Err(ChunkAllocatorError::OutOfMemory) => {
-                            live.push(allocation)
-                        }
-                        Err(error) => {
-                            panic!("unexpected realloc error: {error:?}")
-                        }
+                        Err(OutOfMemory) => live.push(allocation),
                     }
                 }
                 _ => {

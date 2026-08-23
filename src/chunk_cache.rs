@@ -23,114 +23,21 @@ SOFTWARE.
 */
 //! Module for [`ChunkCacheEntry`].
 
-/*/// Chunk Cache for possible alignments.
-/// Helper struct for [`crate::ChunkAllocator`].
-#[derive(Debug)]
-pub(crate) struct ChunkCache {
-    /// Used for all other alignments.
-    align_1: Option<ChunkCacheEntry>,
-    align_256: Option<ChunkCacheEntry>,
-    align_512: Option<ChunkCacheEntry>,
-    align_1024: Option<ChunkCacheEntry>,
-    align_2048: Option<ChunkCacheEntry>,
-    align_4096: Option<ChunkCacheEntry>,
-}
-
-impl ChunkCache {
-    /// Constructor.
-    ///
-    /// The initialization assumes that the backing memory starts at a
-    /// page-aligned address. Otherwise, this costs performance but is correct.
-    /// This cache is only a hint. The allocator will verify the availability of
-    /// the entries and the alignment in any case.
-    #[inline]
-    pub const fn new() -> Self {
-        Self {
-            align_1: Some(ChunkCacheEntry::new(0, 1, 1)),
-            align_256: Some(ChunkCacheEntry::new(0, 256, 1)),
-            align_512: Some(ChunkCacheEntry::new(0, 512, 1)),
-            align_1024: Some(ChunkCacheEntry::new(0, 1024, 1)),
-            align_2048: Some(ChunkCacheEntry::new(0, 2048, 1)),
-            align_4096: Some(ChunkCacheEntry::new(0, 4096, 1)),
-        }
-    }
-
-    /// Updates an existing cache entry for the provided alignment, if any.
-    #[inline(always)]
-    pub const fn update(
-        &mut self,
-        index: usize,
-        alignment: usize,
-        chunk_count: usize,
-    ) {
-        debug_assert!(chunk_count > 0, "chunk count must be > 0");
-        let entry = self.lookup_entry_by_alignment(alignment);
-        if entry.is_none() {
-            entry.replace(ChunkCacheEntry::new(index, alignment, chunk_count));
-        } else {
-            let entry_ref = entry.as_ref().unwrap();
-            // prevent fragmentation; prefer small memory regions
-            if entry_ref.chunk_count > chunk_count {
-                entry.replace(ChunkCacheEntry::new(
-                    index,
-                    alignment,
-                    chunk_count,
-                ));
-            }
-        }
-    }
-
-    #[inline(always)]
-    pub const fn lookup(
-        &mut self,
-        alignment: usize,
-        chunk_count: usize,
-    ) -> Option<ChunkCacheEntry> {
-        debug_assert!(chunk_count > 0, "chunk count must be > 0");
-        let entry = self.lookup_entry_by_alignment(alignment);
-        if entry.is_none() {
-            None
-        } else {
-            let entry_ref = entry.as_ref().unwrap();
-            if entry_ref.chunk_count >= chunk_count
-                && entry_ref.alignment >= alignment
-            {
-                entry.take()
-            } else {
-                None
-            }
-        }
-    }
-
-    const fn lookup_entry_by_alignment(
-        &mut self,
-        alignment: usize,
-    ) -> &mut Option<ChunkCacheEntry> {
-        debug_assert!(
-            alignment.is_power_of_two(),
-            "alignment must be power of 2"
-        );
-        match alignment {
-            256 => &mut self.align_256,
-            512 => &mut self.align_512,
-            1024 => &mut self.align_1024,
-            2048 => &mut self.align_2048,
-            4096 => &mut self.align_4096,
-            _ => &mut self.align_1,
-        }
-    }
-}*/
-
-/// Single cache chunk entry.
+/// Hint where the next allocation search should start.
+///
+/// The entry is never trusted: [`crate::ChunkAllocator`] re-verifies
+/// availability and alignment of every chunk it looks at. Its only purpose is
+/// to keep the common case from scanning the whole bitmap.
 #[derive(Debug)]
 pub(crate) struct ChunkCacheEntry {
-    /// Chunk index inside
+    /// Index of the first chunk of the cached region.
     index: usize,
-    /// Alignment. Power of 2. If this is 256 the entry can still be
-    /// page-aligned (4096). This is only a hint that gets set and used
-    /// during runtime.
+    /// Known alignment of the cached region. Power of two.
+    ///
+    /// This is a lower bound: an entry recorded as 256-aligned may well sit at
+    /// a page boundary.
     alignment: usize,
-    /// Length of the continuous memory region in chunks. x > 0.
+    /// Length of the continuous memory region in chunks. Always > 0.
     chunk_count: usize,
 }
 
@@ -168,19 +75,3 @@ impl ChunkCacheEntry {
         self.chunk_count
     }
 }
-
-/*#[cfg(test)]
-mod tests {
-    use crate::chunk_cache::ChunkCache;
-
-    #[test]
-    fn test_chunk_cache() {
-        let mut cache = ChunkCache::new();
-        cache.update(0, 8, 128);
-        cache.update(0, 128, 128);
-        cache.update(0, 4096, 128);
-        assert!(cache.lookup(4096, 129).is_none());
-        assert!(cache.lookup(4096, 128).is_some());
-        assert!(cache.lookup(4096, 128).is_none(), "already taken");
-    }
-}*/

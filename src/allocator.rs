@@ -30,19 +30,6 @@ use core::error;
 use core::fmt;
 use core::ptr::{self, NonNull};
 
-/// Zero sized types may trigger this; according to the Rust doc of the
-/// `Allocator` trait this is intended. I work around this by changing the size
-/// to 1. This makes core simpler.
-macro_rules! normalize_layout {
-    ($layout:ident) => {
-        if $layout.size() == 0 {
-            core::alloc::Layout::from_size_align(1, $layout.align()).unwrap()
-        } else {
-            $layout
-        }
-    };
-}
-
 /// No free run of chunks can satisfy a request.
 ///
 /// A heap with room left can still report this: the run must be free as a
@@ -60,6 +47,22 @@ impl error::Error for OutOfMemory {}
 
 /// Default chunk size: 256 bytes.
 pub const DEFAULT_CHUNK_SIZE: usize = 256;
+
+/// Rounds a zero-sized layout up to one byte.
+///
+/// The `Allocator` documentation calls zero-sized requests intended, but a
+/// chunk allocator cannot express "no memory": it would have to hand out zero
+/// chunks and could not tell the matching deallocation apart from a real one.
+/// Charging one chunk for it keeps every path below dealing with whole chunks.
+#[inline]
+fn normalize_layout(layout: Layout) -> Layout {
+    if layout.size() == 0 {
+        Layout::from_size_align(1, layout.align())
+            .expect("one byte should fit a layout that already exists")
+    } else {
+        layout
+    }
+}
 
 /// Where the chunks and their bitmap sit inside the caller's region.
 ///
@@ -525,7 +528,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
     ) -> Result<NonNull<[u8]>, OutOfMemory> {
         log::trace!("called allocate");
         self.initialize_bitmap();
-        let layout = normalize_layout!(layout);
+        let layout = normalize_layout(layout);
 
         let required_chunks = self.calc_required_chunks(layout.size());
 
@@ -588,7 +591,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
     #[inline]
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
         log::trace!("called deallocate");
-        let layout = normalize_layout!(layout);
+        let layout = normalize_layout(layout);
 
         let freed_chunks = self.calc_required_chunks(layout.size());
 
@@ -647,7 +650,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         // zero sized types may trigger this; according to the Rust doc of the
         // `Allocator` trait this is intended. I work around this by
         // changing the size to 1.
-        let old_layout = normalize_layout!(old_layout);
+        let old_layout = normalize_layout(old_layout);
 
         let required_chunks = self.calc_required_chunks(old_layout.size());
         let occupied_size = required_chunks * CHUNK_SIZE;
@@ -655,7 +658,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         // Reuse the allocation when it already has enough space.
         if new_size <= occupied_size {
             // `max(1)`: a shrink to zero keeps the allocation alive, and
-            // `normalize_layout!` will report one chunk on the matching
+            // `normalize_layout` will report one chunk on the matching
             // deallocation.
             let required_new_chunks =
                 self.calc_required_chunks(new_size.max(1));

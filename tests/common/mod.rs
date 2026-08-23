@@ -22,6 +22,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 //! Shared scaffolding for the integration tests.
+//!
+//! Every test binary compiles this module in full, so items only some of them
+//! use would otherwise be reported as dead code.
+#![allow(dead_code)]
 
 use core::alloc::Layout;
 use core::ptr::NonNull;
@@ -118,3 +122,11 @@ impl Allocation {
         );
     }
 }
+
+/// Page-aligned backing memory for an allocator built in a `static`.
+///
+/// The allocator accepts any alignment, but a chunk-aligned region is the only
+/// one whose chunk count is exactly `SIZE / CHUNK_SIZE`, which tests that
+/// assert on `usage` rely on.
+#[repr(align(4096))]
+pub struct StaticRegion<const SIZE: usize>(pub [u8; SIZE]);

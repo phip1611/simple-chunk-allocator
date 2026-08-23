@@ -716,13 +716,12 @@ mod tests {
 
         use super::*;
 
-        /// Page-aligned backing memory for an allocator under test.
+        /// Aligned backing memory for an allocator under test.
         ///
         /// Tests that expect a specific chunk count, or that exercise
         /// allocations aligned beyond the chunk size, need to know where their
-        /// region starts. A page boundary is the strongest alignment the
-        /// allocator can make use of, and over-allocating a `Vec` and taking
-        /// an aligned window out of it is enough to get one.
+        /// region starts. Over-allocating a `Vec` and taking an aligned window
+        /// out of it is enough to get that.
         #[derive(Debug)]
         pub struct Region {
             buffer: Vec<u8>,
@@ -731,13 +730,14 @@ mod tests {
         }
 
         impl Region {
-            /// Creates `len` page-aligned bytes, every one of them `fill`.
+            /// Creates `len` bytes aligned to `alignment`, every one of them
+            /// `fill`.
             ///
             /// Filling with something other than zero is what proves that the
             /// allocator does not rely on a pre-zeroed region.
-            pub fn new(len: usize, fill: u8) -> Self {
-                let buffer = std::vec![fill; len + 4096];
-                let offset = buffer.as_ptr().align_offset(4096);
+            pub fn aligned(len: usize, alignment: usize, fill: u8) -> Self {
+                let buffer = std::vec![fill; len + alignment];
+                let offset = buffer.as_ptr().align_offset(alignment);
                 Self {
                     buffer,
                     offset,
@@ -745,12 +745,25 @@ mod tests {
                 }
             }
 
+            /// Creates `len` page-aligned bytes, every one of them `fill`.
+            pub fn new(len: usize, fill: u8) -> Self {
+                Self::aligned(len, 4096, fill)
+            }
+
             /// Creates memory that holds exactly `chunk_count` chunks plus
             /// their bitmap.
+            ///
+            /// The alignment has to reach the chunk size, not just a page:
+            /// otherwise the allocator skips bytes to align its first chunk
+            /// and the region holds one chunk less than asked for.
             pub fn for_chunks<const CHUNK_SIZE: usize>(
                 chunk_count: usize,
             ) -> Self {
-                Self::new(chunk_count * CHUNK_SIZE + chunk_count.div_ceil(8), 0)
+                Self::aligned(
+                    chunk_count * CHUNK_SIZE + chunk_count.div_ceil(8),
+                    if CHUNK_SIZE > 4096 { CHUNK_SIZE } else { 4096 },
+                    0,
+                )
             }
 
             pub fn as_mut_slice(&mut self) -> &mut [u8] {

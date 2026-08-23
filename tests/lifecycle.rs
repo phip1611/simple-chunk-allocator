@@ -43,7 +43,9 @@ const CHUNK_SIZE: usize = 256;
 /// # Safety
 /// `region` must outlive the returned allocator and must not be used
 /// otherwise.
-unsafe fn allocator_over(region: &mut [u8]) -> ChunkAllocator<CHUNK_SIZE> {
+unsafe fn allocator_over<const CHUNK_SIZE: usize>(
+    region: &mut [u8],
+) -> ChunkAllocator<CHUNK_SIZE> {
     // SAFETY: forwarded to the caller.
     unsafe { ChunkAllocator::new(region.as_mut_ptr(), region.len()) }
 }
@@ -58,7 +60,8 @@ fn a_region_too_small_for_a_chunk_is_rejected() {
             let mut region = vec![0_u8; len];
             // SAFETY: `region` outlives the allocator and is not used
             // otherwise.
-            let _allocator = unsafe { allocator_over(&mut region) };
+            let _allocator =
+                unsafe { allocator_over::<CHUNK_SIZE>(&mut region) };
         })
         .expect_err("region too small for one chunk");
     }
@@ -80,7 +83,7 @@ fn required_region_size_covers_every_alignment() {
             let region = &mut backing.as_mut_slice()[offset..offset + len];
             // SAFETY: `backing` outlives the allocator and the window is used
             // by nothing else.
-            let allocator = unsafe { allocator_over(region) };
+            let allocator = unsafe { allocator_over::<CHUNK_SIZE>(region) };
             assert!(
                 allocator.chunk_count() >= chunk_count,
                 "asked for {chunk_count} chunks at offset {offset}, got {}",
@@ -98,7 +101,8 @@ fn dirty_region_starts_out_empty() {
     let mut backing = Region::for_chunks::<CHUNK_SIZE>(16);
     backing.as_mut_slice().fill(0xff);
     // SAFETY: `backing` outlives the allocator and is not used meanwhile.
-    let mut allocator = unsafe { allocator_over(backing.as_mut_slice()) };
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
 
     assert_eq!(allocator.usage(), 0.0);
     let whole_heap = Layout::from_size_align(allocator.capacity(), 1).unwrap();
@@ -108,19 +112,25 @@ fn dirty_region_starts_out_empty() {
     );
 }
 
-/// The bitmap shares its region with the chunks, so a geometry that is one
-/// chunk too generous would let the last allocation scribble over the
-/// bookkeeping. Every chunk is written full width to catch that, and the heap
-/// is emptied afterwards to prove the bitmap still describes it.
-#[test]
-fn allocations_never_reach_the_bitmap() {
-    const CHUNKS: usize = 16;
-    let mut backing = Region::for_chunks::<CHUNK_SIZE>(CHUNKS);
+/// Fills a heap of `chunk_count` chunks completely, checks that nothing else
+/// fits and that no allocation lost its contents, then empties it again.
+///
+/// Every allocation carries its own byte pattern, so an overlap between two of
+/// them - or between the last chunk and the bitmap that sits right behind it -
+/// shows up as a foreign byte. Miri cannot see either: the whole region is a
+/// single allocation to it, so overruns and use-after-free inside it are
+/// invisible. These patterns are the only check for that.
+fn fill_and_empty_heap<const CHUNK_SIZE: usize>(chunk_count: usize) {
+    let mut backing = Region::for_chunks::<CHUNK_SIZE>(chunk_count);
+    let region = backing.as_mut_slice();
+    let region_start = region.as_ptr() as usize;
+    let region_end = region_start + region.len();
     // SAFETY: `backing` outlives the allocator and is not used meanwhile.
-    let mut allocator = unsafe { allocator_over(backing.as_mut_slice()) };
+    let mut allocator = unsafe { allocator_over::<CHUNK_SIZE>(region) };
+    assert_eq!(allocator.chunk_count(), chunk_count);
     let layout = Layout::from_size_align(CHUNK_SIZE, 1).unwrap();
 
-    let allocations: Vec<_> = (0..CHUNKS)
+    let allocations: Vec<_> = (0..chunk_count)
         .map(|index| Allocation {
             ptr: allocator.allocate(layout).unwrap().cast(),
             layout,
@@ -129,6 +139,15 @@ fn allocations_never_reach_the_bitmap() {
         })
         .collect();
     allocations.iter().for_each(Allocation::fill);
+
+    for allocation in &allocations {
+        let begin = allocation.ptr.as_ptr() as usize;
+        assert!(
+            begin >= region_start && begin + CHUNK_SIZE <= region_end,
+            "chunk at {begin:#x} leaves the region \
+             {region_start:#x}..{region_end:#x}"
+        );
+    }
 
     assert_eq!(allocator.usage(), 1.0);
     assert_eq!(allocator.allocate(layout), Err(OutOfMemory));
@@ -147,6 +166,34 @@ fn allocations_never_reach_the_bitmap() {
     );
 }
 
+/// The bitmap shares its region with the chunks, so a geometry that is one
+/// chunk too generous would let the last allocation scribble over the
+/// bookkeeping.
+///
+/// A chunk count that is not a multiple of eight is the interesting case: the
+/// bitmap rounds up to whole bytes, leaving spare bits in the last one.
+/// Treating those as chunks would hand out memory past the end of the region.
+#[test]
+fn allocations_never_reach_the_bitmap() {
+    for chunk_count in [1, 2, 3, 7, 8, 9, 13, 16, 17, 31, 64] {
+        fill_and_empty_heap::<CHUNK_SIZE>(chunk_count);
+    }
+}
+
+/// `CHUNK_SIZE` is a const generic that callers pick freely, and the extremes
+/// change what the allocator does. At 1 the bitmap costs an eighth of the
+/// region and there is no alignment guarantee beyond a single byte; at a page
+/// or more every chunk is page-aligned and the bitmap is a rounding error.
+#[test]
+fn every_chunk_size_carries_a_full_cycle() {
+    fill_and_empty_heap::<1>(64);
+    fill_and_empty_heap::<2>(37);
+    fill_and_empty_heap::<8>(9);
+    fill_and_empty_heap::<64>(23);
+    fill_and_empty_heap::<4096>(5);
+    fill_and_empty_heap::<8192>(3);
+}
+
 /// Allocating many times the heap's size in sequence only works if every
 /// deallocation gives its chunks back. A leak would run out during the loop.
 #[test]
@@ -154,7 +201,8 @@ fn freed_chunks_are_reused() {
     const CHUNKS: usize = 16;
     let mut backing = Region::for_chunks::<CHUNK_SIZE>(CHUNKS);
     // SAFETY: `backing` outlives the allocator and is not used meanwhile.
-    let mut allocator = unsafe { allocator_over(backing.as_mut_slice()) };
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
     let layout = Layout::from_size_align(CHUNK_SIZE * 4, 1).unwrap();
 
     // Sixteen heaps' worth in total, four under Miri, which interprets every
@@ -184,7 +232,8 @@ fn freed_chunks_are_reused() {
 fn allocate_respects_boundaries_and_reuses_chunks() {
     let mut backing = Region::for_chunks::<CHUNK_SIZE>(8);
     // SAFETY: `backing` outlives the allocator and is not used meanwhile.
-    let mut allocator = unsafe { allocator_over(backing.as_mut_slice()) };
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
     let layout = Layout::from_size_align(CHUNK_SIZE, 1).unwrap();
 
     let mut allocations: Vec<_> = (0..8)
@@ -205,7 +254,8 @@ fn allocate_respects_boundaries_and_reuses_chunks() {
 fn allocate_honors_requested_alignment() {
     let mut backing = Region::for_chunks::<CHUNK_SIZE>(64);
     // SAFETY: `backing` outlives the allocator and is not used meanwhile.
-    let mut allocator = unsafe { allocator_over(backing.as_mut_slice()) };
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
     let mut allocations = Vec::new();
 
     for alignment in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096] {
@@ -233,7 +283,8 @@ fn allocate_honors_requested_alignment() {
 fn realloc_preserves_data_and_releases_chunks() {
     let mut backing = Region::for_chunks::<CHUNK_SIZE>(16);
     // SAFETY: `backing` outlives the allocator and is not used meanwhile.
-    let mut allocator = unsafe { allocator_over(backing.as_mut_slice()) };
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
     let old_layout = Layout::from_size_align(128, 64).unwrap();
     let record = Allocation {
         ptr: allocator.allocate(old_layout).unwrap().cast(),
@@ -277,6 +328,44 @@ fn realloc_preserves_data_and_releases_chunks() {
     assert_eq!(allocator.usage(), 0.0);
 }
 
+/// An alignment above the chunk size does not need the region to carry that
+/// alignment.
+///
+/// Chunk `i` sits at `base + i * CHUNK_SIZE` and the allocator makes `base`
+/// chunk-aligned, so every `alignment / CHUNK_SIZE`-th chunk meets a larger
+/// alignment. Which ones those are shifts with the region, but they are always
+/// there: a page-aligned allocation comes out of an unaligned region.
+#[test]
+fn over_aligned_allocations_do_not_need_an_over_aligned_region() {
+    // A page-aligned buffer to skew deliberately, so that every case below
+    // starts at a known distance from a page boundary.
+    let mut backing = Region::new(64 * 1024, 0);
+    let page = backing.as_mut_slice();
+
+    for skew_chunks in [0, 1, 2, 7, 15] {
+        let skew = skew_chunks * CHUNK_SIZE;
+        let region = &mut page[skew..skew + 32 * 1024];
+        assert_eq!(
+            region.as_ptr().align_offset(4096) == 0,
+            skew_chunks == 0,
+            "only the unskewed region is page aligned"
+        );
+
+        // SAFETY: `backing` outlives the allocator and the window is used by
+        // nothing else.
+        let mut allocator = unsafe { allocator_over::<CHUNK_SIZE>(region) };
+        let layout = Layout::from_size_align(4096, 4096).unwrap();
+        let allocation = allocator
+            .allocate(layout)
+            .unwrap_or_else(|_| panic!("skew of {skew_chunks} chunks"));
+        assert_eq!(
+            allocation.as_ptr().cast::<u8>().align_offset(4096),
+            0,
+            "skew of {skew_chunks} chunks"
+        );
+    }
+}
+
 /// Drives allocate, deallocate and realloc in an order that the hand-written
 /// tests do not reach: they check one operation at a time on an otherwise
 /// fresh heap, while the bugs of a bitmap allocator show up after the heap has
@@ -300,7 +389,8 @@ fn deterministic_allocation_lifecycle() {
     const STEPS: usize = 512;
     let mut backing = Region::for_chunks::<CHUNK_SIZE>(64);
     // SAFETY: `backing` outlives the allocator and is not used meanwhile.
-    let mut allocator = unsafe { allocator_over(backing.as_mut_slice()) };
+    let mut allocator =
+        unsafe { allocator_over::<CHUNK_SIZE>(backing.as_mut_slice()) };
     let mut seed = 0x5eed_u64;
     let mut live: Vec<Allocation> = Vec::new();
 

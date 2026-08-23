@@ -32,6 +32,7 @@ SOFTWARE.
 
 use core::alloc::{Allocator, GlobalAlloc, Layout};
 use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
+use std::thread;
 
 mod common;
 
@@ -217,5 +218,53 @@ fn grow_refuses_an_alignment_it_cannot_provide() {
 
     // SAFETY: `ptr` is still the live allocation made for `layout`.
     unsafe { glue.deallocate(ptr, layout) };
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// The allocator sits behind a spin lock, and this is the only test that puts
+/// more than one thread behind it.
+///
+/// Each thread stamps its allocations with a pattern of its own, so two
+/// threads handed the same chunks overwrite each other and fail here. A lost
+/// update to the bitmap or to `chunks_in_use` shows up in the final `usage`,
+/// which has to be back at zero once every thread has joined.
+#[test]
+fn concurrent_allocations_do_not_overlap() {
+    const CHUNKS: usize = 512;
+    const SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNKS + CHUNKS.div_ceil(8);
+    #[cfg(miri)]
+    const ROUNDS: usize = 4;
+    #[cfg(not(miri))]
+    const ROUNDS: usize = 64;
+    const THREADS: u8 = 4;
+
+    static mut REGION: StaticRegion<SIZE> = StaticRegion([0; SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator =
+        unsafe { GlobalChunkAllocator::new((&raw mut REGION).cast(), SIZE) };
+
+    thread::scope(|scope| {
+        for thread in 1..=THREADS {
+            scope.spawn(move || {
+                for round in 0..ROUNDS {
+                    // Sizes differ per thread and per round, so the threads
+                    // fragment the heap for each other instead of trading the
+                    // same chunk back and forth.
+                    let len = DEFAULT_CHUNK_SIZE * (round % 3 + 1) - 1;
+                    let mut buffer = Vec::with_capacity_in(
+                        len,
+                        ALLOCATOR.allocator_api_glue(),
+                    );
+                    buffer.resize(len, thread);
+                    assert!(
+                        buffer.iter().all(|byte| *byte == thread),
+                        "thread {thread} lost its allocation to another"
+                    );
+                }
+            });
+        }
+    });
+
     assert_eq!(ALLOCATOR.usage(), 0.0);
 }

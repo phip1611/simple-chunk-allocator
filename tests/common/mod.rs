@@ -28,7 +28,8 @@ SOFTWARE.
 #![allow(dead_code)]
 
 use core::alloc::Layout;
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
+use core::slice;
 
 /// Aligned backing memory for an allocator under test.
 ///
@@ -104,7 +105,7 @@ impl Allocation {
     pub fn fill(&self) {
         // SAFETY: `ptr` names a live allocation of `layout.size()` bytes.
         unsafe {
-            core::ptr::write_bytes(
+            ptr::write_bytes(
                 self.ptr.as_ptr(),
                 self.pattern,
                 self.layout.size(),
@@ -125,8 +126,7 @@ impl Allocation {
         );
         // SAFETY: `len` is within the live allocation, and the bytes were
         // initialized by `fill`.
-        let bytes =
-            unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), len) };
+        let bytes = unsafe { slice::from_raw_parts(self.ptr.as_ptr(), len) };
         assert!(
             bytes.iter().all(|byte| *byte == self.pattern),
             "allocation lost its pattern {:#x}",

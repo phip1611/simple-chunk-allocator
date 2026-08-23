@@ -29,6 +29,7 @@ use core::cell::OnceCell;
 use core::error;
 use core::fmt;
 use core::ptr::{self, NonNull};
+use log::{trace, warn};
 
 /// No free run of chunks can satisfy a request.
 ///
@@ -526,7 +527,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         &mut self,
         layout: Layout,
     ) -> Result<NonNull<[u8]>, OutOfMemory> {
-        log::trace!("called allocate");
+        trace!("called allocate");
         self.initialize_bitmap();
         let layout = normalize_layout(layout);
 
@@ -538,7 +539,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         );
 
         if index.is_err() {
-            log::warn!(
+            warn!(
                 "Out of memory for {layout:?}; {}/{} chunks in use",
                 self.chunks_in_use,
                 self.chunk_count()
@@ -571,7 +572,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         }
 
         let heap_ptr = self.chunk_index_to_ptr(index);
-        log::trace!(
+        trace!(
             "alloc: layout={layout:?}, ptr={heap_ptr:?}, #chunks={}",
             required_chunks
         );
@@ -590,12 +591,12 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
     #[track_caller]
     #[inline]
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
-        log::trace!("called deallocate");
+        trace!("called deallocate");
         let layout = normalize_layout(layout);
 
         let freed_chunks = self.calc_required_chunks(layout.size());
 
-        log::trace!("dealloc: layout={:?}, #chunks={})", layout, freed_chunks);
+        trace!("dealloc: layout={:?}, #chunks={})", layout, freed_chunks);
 
         // SAFETY: callers must pass a pointer returned by this allocator.
         let index = unsafe { self.ptr_to_chunk_index(ptr.as_ptr()) };
@@ -645,7 +646,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
         old_layout: Layout,
         new_size: usize,
     ) -> Result<NonNull<[u8]>, OutOfMemory> {
-        log::trace!("called realloc");
+        trace!("called realloc");
 
         // zero sized types may trigger this; according to the Rust doc of the
         // `Allocator` trait this is intended. I work around this by
@@ -675,10 +676,10 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
                 }
                 self.chunks_in_use -= end - begin;
             }
-            log::trace!("realloc fast return possible!");
+            trace!("realloc fast return possible!");
             Ok(NonNull::slice_from_raw_parts(ptr, new_size))
         } else {
-            log::trace!("realloc fast return NOT possible!");
+            trace!("realloc fast return NOT possible!");
 
             // SAFETY: the caller must ensure that the `new_size` does not
             // overflow. `layout.align()` comes from a `Layout` and

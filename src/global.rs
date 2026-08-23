@@ -25,7 +25,8 @@ SOFTWARE.
 
 use crate::{ChunkAllocator, DEFAULT_CHUNK_SIZE};
 use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
+use log::error;
 
 /// Thread-safe [`ChunkAllocator`] wrapper for use as a global allocator.
 ///
@@ -103,7 +104,7 @@ unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
         self.0
             .lock()
             .allocate(layout)
-            .map_or(core::ptr::null_mut(), |allocation| allocation.as_mut_ptr())
+            .map_or(ptr::null_mut(), |allocation| allocation.as_mut_ptr())
     }
 
     #[inline]
@@ -125,9 +126,7 @@ unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
             self.0
                 .lock()
                 .realloc(NonNull::new(ptr).unwrap(), layout, new_size)
-                .map_or(core::ptr::null_mut(), |allocation| {
-                    allocation.as_mut_ptr()
-                })
+                .map_or(ptr::null_mut(), |allocation| allocation.as_mut_ptr())
         }
     }
 }
@@ -173,7 +172,7 @@ unsafe impl<const CHUNK_SIZE: usize> Allocator
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut this = self.0.0.lock();
         ChunkAllocator::allocate(&mut *this, layout).map_err(|error| {
-            log::error!("allocation failed: {error:?}");
+            error!("allocation failed: {error:?}");
             AllocError
         })
     }
@@ -201,7 +200,7 @@ unsafe impl<const CHUNK_SIZE: usize> Allocator
         // SAFETY: `Allocator::grow` requires a valid allocation from `self`.
         unsafe { this.realloc(ptr, old_layout, new_layout.size()) }.map_err(
             |err| {
-                log::error!("realloc error: {err:?}");
+                error!("realloc error: {err:?}");
                 AllocError
             },
         )

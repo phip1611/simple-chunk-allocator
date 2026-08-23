@@ -22,7 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 #![feature(allocator_api)]
-#![feature(slice_ptr_get)]
 
 use rand::RngExt;
 use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
@@ -151,7 +150,7 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
             .for_each(|(layout, allocation)| unsafe {
                 // println!("dealloc: layout={:?}", layout);
                 all_deallocations.push((layout, allocation));
-                alloc.deallocate(allocation.as_non_null_ptr(), layout);
+                alloc.deallocate(allocation.cast::<u8>(), layout);
             });
     }
 

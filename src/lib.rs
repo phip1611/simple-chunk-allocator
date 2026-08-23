@@ -129,7 +129,6 @@ SOFTWARE.
 #![deny(missing_debug_implementations)]
 #![deny(rustdoc::all)]
 #![feature(allocator_api)]
-#![feature(slice_ptr_get)]
 
 mod allocator;
 mod global;

@@ -678,7 +678,7 @@ impl<const CHUNK_SIZE: usize> ChunkAllocator<CHUNK_SIZE> {
             unsafe {
                 ptr::copy_nonoverlapping(
                     ptr.as_ptr(),
-                    new_ptr.as_mut_ptr(),
+                    new_ptr.cast::<u8>().as_ptr(),
                     core::cmp::min(old_layout.size(), new_size),
                 );
                 self.deallocate(ptr, old_layout);

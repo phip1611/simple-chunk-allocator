@@ -104,7 +104,9 @@ unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
         self.0
             .lock()
             .allocate(layout)
-            .map_or(ptr::null_mut(), |allocation| allocation.as_mut_ptr())
+            .map_or(ptr::null_mut(), |allocation| {
+                allocation.cast::<u8>().as_ptr()
+            })
     }
 
     #[inline]
@@ -126,7 +128,9 @@ unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
             self.0
                 .lock()
                 .realloc(NonNull::new(ptr).unwrap(), layout, new_size)
-                .map_or(ptr::null_mut(), |allocation| allocation.as_mut_ptr())
+                .map_or(ptr::null_mut(), |allocation| {
+                    allocation.cast::<u8>().as_ptr()
+                })
         }
     }
 }

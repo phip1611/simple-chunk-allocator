@@ -53,6 +53,7 @@
 - Deallocation points the next search at the freed region. The rule that was
   there before could never fire, so a buffer that is allocated and freed in a
   loop was searched for across the whole heap every time.
+- The crate no longer needs the `slice_ptr_get` feature, only `allocator_api`.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

@@ -15,7 +15,7 @@ binaries.
 - ✅ reasonably fast with low code complexity
 - ✅ const compatibility (no runtime `init()` required)
 - ✅ efficient in scenarios where the heap is a few dozen megabytes in size
-- ✅ user-friendly API
+- ✅ small API: one constructor, no macros, no alignment wrappers
 
 ## When to use it
 

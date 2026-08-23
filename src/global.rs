@@ -27,9 +27,6 @@ use crate::{ChunkAllocator, DEFAULT_CHUNK_SIZE};
 use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
 use core::ptr::NonNull;
 
-/// Default heap size in chunks (1 MiB with [`DEFAULT_CHUNK_SIZE`]).
-pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
-
 /// Thread-safe [`ChunkAllocator`] wrapper for use as a global allocator.
 ///
 /// [`Self::allocator_api_glue`] exposes the nightly [`Allocator`] trait. See

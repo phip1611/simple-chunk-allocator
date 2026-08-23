@@ -22,8 +22,7 @@
   bitmap at the end of it. The separate bitmap parameter is gone, and the
   region may hold uninitialized content.
 - Added `required_region_size`, which reports the region size that holds a
-  given chunk count at any alignment. The constructor rejects a region below
-  that minimum instead of yielding an allocator that can never allocate.
+  given chunk count at any alignment.
 - **Breaking:** removed the `heap!` and `heap_bitmap!` macros, `PageAligned`,
   and `DEFAULT_CHUNK_AMOUNT`. Use `required_region_size` to size a region, and
   a `#[repr(align(...))]` wrapper if a specific alignment is wanted.
@@ -39,8 +38,10 @@
   bitmap at the end of it. The separate bitmap parameter is gone, and the
   region may hold uninitialized content.
 - Added `required_region_size`, which reports the region size that holds a
-  given chunk count at any alignment. The constructor rejects a region below
-  that minimum instead of yielding an allocator that can never allocate.
+  given chunk count at any alignment.
+- **Breaking:** removed the `heap!` and `heap_bitmap!` macros, `PageAligned`,
+  and `DEFAULT_CHUNK_AMOUNT`. Use `required_region_size` to size a region, and
+  a `#[repr(align(...))]` wrapper if a specific alignment is wanted.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

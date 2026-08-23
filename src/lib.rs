@@ -130,16 +130,12 @@ SOFTWARE.
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
 
-#[macro_use]
-mod macros;
 mod allocator;
 mod chunk_cache;
 mod global;
-mod page_aligned;
 
 pub use allocator::*;
 pub use global::*;
-pub use page_aligned::PageAligned;
 
 #[cfg(test)]
 #[macro_use]

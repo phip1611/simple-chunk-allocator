@@ -98,6 +98,26 @@ unsafe impl Send for Geometry {}
 ///
 /// This type is not synchronized: every operation takes `&mut self`. Use
 /// [`crate::GlobalChunkAllocator`] to share one.
+///
+/// # Example
+/// ```rust
+/// use core::alloc::Layout;
+/// use simple_chunk_allocator::ChunkAllocator;
+///
+/// let mut region = [0_u8; 4096];
+/// // SAFETY: `region` outlives the allocator and nothing else touches it.
+/// let mut allocator = unsafe {
+///     ChunkAllocator::<256>::new(region.as_mut_ptr(), region.len())
+/// };
+///
+/// let layout = Layout::from_size_align(64, 8).unwrap();
+/// let allocation = allocator.allocate(layout).unwrap();
+/// assert!(allocator.usage() > 0.0);
+///
+/// // SAFETY: `allocation` is live and paired with its original layout.
+/// unsafe { allocator.deallocate(allocation.cast(), layout) };
+/// assert_eq!(allocator.usage(), 0.0);
+/// ```
 #[derive(Debug)]
 pub struct ChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE> {
     /// Start of the caller-provided region, of any alignment.

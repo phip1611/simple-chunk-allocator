@@ -105,6 +105,9 @@ let allocation = allocator.allocate(layout).unwrap();
 unsafe { allocator.deallocate(allocation.cast(), layout) };
 ```
 
+The snippets above are shortened. The API documentation carries the same
+examples in full, where they are compiled and run as doctests.
+
 Only deallocate or reallocate pointers returned by the same allocator, using
 the original layout. These operations are unsafe because a mismatched pointer
 or layout can corrupt the allocator.

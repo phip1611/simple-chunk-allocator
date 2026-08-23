@@ -109,6 +109,24 @@ Only deallocate or reallocate pointers returned by the same allocator, using
 the original layout. These operations are unsafe because a mismatched pointer
 or layout can corrupt the allocator.
 
+## Testing
+
+```
+cargo test
+cargo miri test
+MIRIFLAGS="-Zmiri-many-seeds=0..12" cargo miri test   # thread interleavings
+```
+
+Miri checks the crate's own pointer arithmetic, aliasing and alignment, and it
+covers every test including the doctests. It cannot check what the allocator
+promises its callers: the whole region is a single allocation to Miri, so an
+overrun from one chunk into the next, or a write to a chunk after it was freed,
+is invisible to it. Only an access that leaves the region entirely is reported.
+
+That is why the tests give every allocation its own byte pattern and read it
+back: an overlap between two live allocations shows up as a foreign byte. Those
+checks are not redundant with Miri, they are the only check for that property.
+
 ## Performance
 
 TODO: The previous benchmark numbers were measured against an older version of

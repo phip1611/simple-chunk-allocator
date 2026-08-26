@@ -24,11 +24,12 @@ SOFTWARE.
 //! # Simple Chunk Allocator
 //!
 //! A nightly-only `no_std` allocator that manages fixed-size chunks in
-//! caller-provided static memory.
+//! caller-provided memory.
 //!
-//! [`ChunkAllocator`] manages a heap in fixed-size chunks. For a global
-//! allocator, use [`GlobalChunkAllocator`] with static, chunk-aligned heap and
-//! bitmap storage. The bitmap needs exactly one bit for each heap chunk.
+//! [`ChunkAllocator`] takes a single contiguous region and splits it into
+//! chunks plus the bitmap that tracks them. [`GlobalChunkAllocator`] wraps it
+//! behind a lock for `#[global_allocator]` use. The region needs no particular
+//! alignment and no initialization; see [`ChunkAllocator::new`].
 //!
 //! The crate requires nightly for `allocator_api`. See the README for sizing
 //! guidance.
@@ -36,48 +37,34 @@ SOFTWARE.
 //! ## Highlights
 //!
 //! - ✅ `no_std` allocator with test coverage
-//! - ✅ uses static memory as backing storage (no paging/page table
-//!   manipulations)
-//! - ✅ allocation strategy is a combination of next-fit and best-fit
+//! - ✅ uses a single caller-provided region as backing storage (no paging/page
+//!   table manipulations)
+//! - ✅ next-fit allocation that reuses the most recently freed region first
 //! - ✅ reasonably fast with low code complexity
 //! - ✅ const compatibility (no runtime `init()` required)
 //! - ✅ efficient in scenarios where the heap is a few dozen megabytes in size
-//! - ✅ user-friendly API
+//! - ✅ small API: one constructor, no macros, no alignment wrappers
 //!
 //! ## Example
 //!
-//! The macros derive the storage types from the chunk geometry, so the same
-//! constants describe the arrays and the slices handed to the allocator:
+//! The allocator manages one contiguous region: the chunks first, their
+//! bitmap at the end. [`ChunkAllocator::required_region_size`] turns a chunk
+//! count into the region size that is guaranteed to hold it.
 //!
 //! ```rust
 //! #![feature(allocator_api)]
-//! use simple_chunk_allocator::{
-//!     DEFAULT_CHUNK_AMOUNT, DEFAULT_CHUNK_SIZE, GlobalChunkAllocator,
-//!     PageAligned, heap, heap_bitmap,
-//! };
+//! use simple_chunk_allocator::GlobalChunkAllocator;
 //!
-//! const CHUNKS: usize = DEFAULT_CHUNK_AMOUNT;
-//! const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
+//! /// Named once, so that the chunk size is stated once.
+//! type Allocator = GlobalChunkAllocator;
 //!
-//! static mut HEAP: PageAligned<[u8; CHUNKS * CHUNK_SIZE]> =
-//!     heap!(chunks = CHUNKS, chunksize = CHUNK_SIZE);
-//! static mut BITMAP: PageAligned<[u8; CHUNKS / 8]> =
-//!     heap_bitmap!(chunks = CHUNKS);
+//! const REGION_SIZE: usize = Allocator::required_region_size(4096);
+//! static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 //!
 //! #[global_allocator]
-//! // SAFETY: ALLOCATOR exclusively owns both statics for the whole program.
-//! static ALLOCATOR: GlobalChunkAllocator<CHUNK_SIZE> = unsafe {
-//!     GlobalChunkAllocator::new_raw(
-//!         core::ptr::slice_from_raw_parts_mut(
-//!             core::ptr::addr_of_mut!(HEAP).cast(),
-//!             CHUNKS * CHUNK_SIZE,
-//!         ),
-//!         core::ptr::slice_from_raw_parts_mut(
-//!             core::ptr::addr_of_mut!(BITMAP).cast(),
-//!             CHUNKS / 8,
-//!         ),
-//!     )
-//! };
+//! // SAFETY: `ALLOCATOR` is the only user of `REGION` for the whole program.
+//! static ALLOCATOR: Allocator =
+//!     unsafe { Allocator::new((&raw mut REGION).cast(), REGION_SIZE) };
 //!
 //! fn main() {
 //!     // In a hosted binary the runtime already allocated before `main`.
@@ -93,34 +80,36 @@ SOFTWARE.
 //!
 //! ## Implementation
 //!
-//! The bookkeeping is a bitmap with one bit per chunk, stored in memory the
-//! caller provides. The allocator therefore owns no memory of its own and
-//! never touches paging or page tables.
+//! The bookkeeping is a bitmap with one bit per chunk. It lives at the end of
+//! the same region as the chunks, so the allocator owns no memory of its own
+//! and never touches paging or page tables. How many chunks fit therefore
+//! depends on the region: each one costs `CHUNK_SIZE` bytes plus a bitmap bit.
 //!
 //! An allocation of `n` bytes occupies `ceil(n / CHUNK_SIZE)` consecutive
 //! chunks. Small allocations thus occupy a whole chunk, which is the price for
 //! keeping the bookkeeping at a single bit per chunk.
 //!
-//! The search for those chunks starts at a cached hint and takes the first run
-//! that is long enough and whose start address satisfies the requested
-//! alignment (next-fit). Chunks start at `CHUNK_SIZE`-aligned addresses, so
-//! alignments up to the chunk size always fit; larger alignments make the
-//! search skip candidates. Deallocation moves the hint to the freed region
-//! when that region is smaller than the cached one, which biases the next
-//! allocation towards the smallest recent gap (best-fit) and slows down
-//! fragmentation.
+//! The search starts at a hint and takes the first run that is long enough
+//! and whose start address satisfies the requested alignment (next-fit).
+//! Chunks start at `CHUNK_SIZE`-aligned addresses, so alignments up to the
+//! chunk size always fit; a larger one is met by every
+//! `alignment / CHUNK_SIZE`-th chunk.
+//!
+//! Deallocation points the hint at the freed region, so a buffer allocated
+//! and freed over and over is handed back the memory it just released
+//! instead of being searched for.
 //!
 //! Everything needed to build an allocator is `const`, so the allocator and
 //! its backing memory can be set up at compile time and need no runtime
-//! `init()`. Heap alignment is the one property that a const context cannot
-//! check; it is validated on the first allocation instead.
+//! `init()`. The one thing a const context cannot do is look at an address,
+//! which is what deciding where the chunks start requires. That happens on
+//! first use instead, along with zeroing the bitmap.
 //!
 //! ## Safety
 //!
-//! Constructors that accept raw slices require exclusive ownership of valid,
-//! non-overlapping backing storage for the allocator lifetime. Deallocation and
-//! reallocation require a live pointer from the same allocator and its original
-//! layout.
+//! The constructors require exclusive ownership of a valid backing region for
+//! the allocator lifetime. Deallocation and reallocation require a live
+//! pointer from the same allocator and its original layout.
 
 #![no_std]
 #![deny(
@@ -140,18 +129,12 @@ SOFTWARE.
 #![deny(missing_debug_implementations)]
 #![deny(rustdoc::all)]
 #![feature(allocator_api)]
-#![feature(slice_ptr_get)]
 
-#[macro_use]
-mod macros;
 mod allocator;
-mod chunk_cache;
 mod global;
-mod page_aligned;
 
 pub use allocator::*;
 pub use global::*;
-pub use page_aligned::PageAligned;
 
 #[cfg(test)]
 #[macro_use]

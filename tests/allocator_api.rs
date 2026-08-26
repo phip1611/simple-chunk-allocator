@@ -1,0 +1,331 @@
+/*
+MIT License
+
+Copyright (c) 2026 Philipp Schuster
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+//! Exercises [`GlobalChunkAllocator`] without registering it globally.
+//!
+//! This is the second way the crate is meant to be used: the allocator stays
+//! a normal `static` and only the collections that name it allocate from it.
+//! Unlike `tests/global_allocator.rs`, nothing else allocates here, so these
+//! tests can assert on exact usage numbers.
+
+#![feature(allocator_api)]
+
+use core::alloc::{Allocator, GlobalAlloc, Layout};
+use core::{ptr, slice};
+use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
+use std::thread;
+
+mod common;
+
+use common::StaticRegion;
+
+const CHUNK_COUNT: usize = 8;
+const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
+const REGION_SIZE: usize = HEAP_SIZE + CHUNK_COUNT.div_ceil(8);
+
+/// A chunk-aligned region of eight chunks must report exactly those, so that
+/// every allocation below moves `usage` by a known eighth.
+#[test]
+fn usage_follows_live_collections() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    assert_eq!(ALLOCATOR.chunk_count(), CHUNK_COUNT);
+    assert_eq!(ALLOCATOR.capacity(), HEAP_SIZE);
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+
+    let vec1 = Vec::<u8, _>::with_capacity_in(
+        DEFAULT_CHUNK_SIZE * 2,
+        ALLOCATOR.allocator_api_glue(),
+    );
+    assert_eq!(ALLOCATOR.usage(), 0.25);
+    let vec2 = Vec::<u8, _>::with_capacity_in(
+        DEFAULT_CHUNK_SIZE * 6,
+        ALLOCATOR.allocator_api_glue(),
+    );
+    assert_eq!(ALLOCATOR.usage(), 1.0);
+
+    drop(vec1);
+    assert_eq!(ALLOCATOR.usage(), 0.75);
+    let vec3 = Vec::<u8, _>::with_capacity_in(
+        DEFAULT_CHUNK_SIZE,
+        ALLOCATOR.allocator_api_glue(),
+    );
+    assert_eq!(ALLOCATOR.usage(), 0.875);
+
+    drop(vec2);
+    drop(vec3);
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// `GlobalAlloc` has no error type: exhaustion has to arrive as a null
+/// pointer, not as a panic.
+///
+/// A collection cannot stand in for this. When an allocation fails, the
+/// standard library calls the allocation error handler, which aborts the
+/// process instead of unwinding, so `catch_unwind` cannot observe it.
+#[test]
+fn global_alloc_returns_null_on_out_of_memory() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    let layout = Layout::from_size_align(HEAP_SIZE, 1).unwrap();
+
+    // SAFETY: `layout` is valid and the returned pointer is deallocated below.
+    let ptr = unsafe { GlobalAlloc::alloc(&ALLOCATOR, layout) };
+    assert!(!ptr.is_null());
+    // SAFETY: this valid request cannot fit while `ptr` is live.
+    assert!(unsafe { GlobalAlloc::alloc(&ALLOCATOR, layout) }.is_null());
+    // SAFETY: `ptr` is the live allocation returned for `layout`.
+    unsafe { GlobalAlloc::dealloc(&ALLOCATOR, ptr, layout) };
+}
+
+/// Growing inside the chunks an allocation already owns must reuse them.
+///
+/// Allocations are rounded up to whole chunks, so most growth steps of a
+/// `Vec` need no new memory at all. Skipping the copy is what makes that
+/// cheap, and the observable difference is that the pointer stays put.
+#[test]
+fn realloc_reuses_the_chunks_an_allocation_already_owns() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    let layout = Layout::from_size_align(1, 1).unwrap();
+
+    // SAFETY: `layout` is valid; the pointer is reallocated and freed below.
+    let ptr = unsafe { GlobalAlloc::alloc(&ALLOCATOR, layout) };
+    assert!(!ptr.is_null());
+    assert_eq!(ALLOCATOR.usage(), 1.0 / CHUNK_COUNT as f32);
+
+    // Still within the first chunk.
+    // SAFETY: `ptr` is live and paired with `layout`.
+    let grown = unsafe {
+        GlobalAlloc::realloc(&ALLOCATOR, ptr, layout, DEFAULT_CHUNK_SIZE)
+    };
+    assert_eq!(grown, ptr, "growth inside the chunk must not move the data");
+    assert_eq!(ALLOCATOR.usage(), 1.0 / CHUNK_COUNT as f32);
+
+    // One byte beyond it, which needs a second chunk and therefore a copy.
+    let grown_layout = Layout::from_size_align(DEFAULT_CHUNK_SIZE, 1).unwrap();
+    // SAFETY: `grown` is live and paired with `grown_layout`.
+    let moved = unsafe {
+        GlobalAlloc::realloc(
+            &ALLOCATOR,
+            grown,
+            grown_layout,
+            DEFAULT_CHUNK_SIZE + 1,
+        )
+    };
+    assert!(!moved.is_null());
+    assert_eq!(ALLOCATOR.usage(), 2.0 / CHUNK_COUNT as f32);
+
+    let moved_layout =
+        Layout::from_size_align(DEFAULT_CHUNK_SIZE + 1, 1).unwrap();
+    // SAFETY: `moved` is the live allocation for `moved_layout`.
+    unsafe { GlobalAlloc::dealloc(&ALLOCATOR, moved, moved_layout) };
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// Growing a collection is the only way `Allocator::grow` gets called, and no
+/// other test reaches it: `with_capacity_in` allocates once and never resizes.
+#[test]
+fn growing_a_collection_moves_it_only_when_it_has_to() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    // Starting at one element forces a growth step per doubling. The first
+    // steps stay inside the chunk the allocation already owns; the later ones
+    // have to move it, and both paths must preserve the contents.
+    let mut values = Vec::with_capacity_in(1, ALLOCATOR.allocator_api_glue());
+    for value in 0..512_u16 {
+        values.push(value);
+    }
+    assert!(values.iter().copied().eq(0..512));
+
+    values.truncate(8);
+    values.shrink_to_fit();
+    assert!(values.iter().copied().eq(0..8));
+    assert_eq!(ALLOCATOR.usage(), 1.0 / CHUNK_COUNT as f32);
+
+    drop(values);
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// An allocation cannot gain alignment on the way: the underlying `realloc`
+/// keeps the one it was made with. Both resize directions have to report that
+/// instead of unwinding, which a caller in a `no_std` binary could not
+/// recover from.
+#[test]
+fn resizing_refuses_an_alignment_it_cannot_provide() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    let glue = ALLOCATOR.allocator_api_glue();
+    let layout = Layout::from_size_align(8, 8).unwrap();
+    let ptr = glue.allocate(layout).unwrap().cast::<u8>();
+    let stricter = Layout::from_size_align(16, DEFAULT_CHUNK_SIZE * 2).unwrap();
+
+    // SAFETY: `ptr` is live, made for `layout`, and `stricter` is larger.
+    assert!(unsafe { glue.grow(ptr, layout, stricter) }.is_err());
+    assert_eq!(
+        ALLOCATOR.usage(),
+        1.0 / CHUNK_COUNT as f32,
+        "the refused grow must leave the allocation alone"
+    );
+
+    // SAFETY: `ptr` is still the live allocation made for `layout`.
+    unsafe { glue.deallocate(ptr, layout) };
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// The allocator sits behind a spin lock, and this is the only test that puts
+/// more than one thread behind it.
+///
+/// Each thread stamps its allocations with a pattern of its own, so two
+/// threads handed the same chunks overwrite each other and fail here. A lost
+/// update to the bitmap or to `chunks_in_use` shows up in the final `usage`,
+/// which has to be back at zero once every thread has joined.
+#[test]
+fn concurrent_allocations_do_not_overlap() {
+    const CHUNKS: usize = 512;
+    const SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNKS + CHUNKS.div_ceil(8);
+    #[cfg(miri)]
+    const ROUNDS: usize = 4;
+    #[cfg(not(miri))]
+    const ROUNDS: usize = 64;
+    const THREADS: u8 = 4;
+
+    static mut REGION: StaticRegion<SIZE> = StaticRegion([0; SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator =
+        unsafe { GlobalChunkAllocator::new((&raw mut REGION).cast(), SIZE) };
+
+    thread::scope(|scope| {
+        for thread in 1..=THREADS {
+            scope.spawn(move || {
+                for round in 0..ROUNDS {
+                    // Sizes differ per thread and per round, so the threads
+                    // fragment the heap for each other instead of trading the
+                    // same chunk back and forth.
+                    let len = DEFAULT_CHUNK_SIZE * (round % 3 + 1) - 1;
+                    let mut buffer = Vec::with_capacity_in(
+                        len,
+                        ALLOCATOR.allocator_api_glue(),
+                    );
+                    buffer.resize(len, thread);
+                    assert!(
+                        buffer.iter().all(|byte| *byte == thread),
+                        "thread {thread} lost its allocation to another"
+                    );
+                }
+            });
+        }
+    });
+
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}
+
+/// Shrinking inside the chunks an allocation already owns keeps it where it
+/// is and hands back the chunks behind it. The default `shrink` of the
+/// `Allocator` trait would allocate, copy and free instead, which for a chunk
+/// allocator is the expensive way to do nothing.
+#[test]
+fn shrinking_releases_chunks_without_moving_the_allocation() {
+    static mut REGION: StaticRegion<REGION_SIZE> =
+        StaticRegion([0; REGION_SIZE]);
+    // SAFETY: `ALLOCATOR` is the only user of `REGION`, and this test runs
+    // once. Every test declares its own so that they do not share usage.
+    static ALLOCATOR: GlobalChunkAllocator = unsafe {
+        GlobalChunkAllocator::new((&raw mut REGION).cast(), REGION_SIZE)
+    };
+
+    let glue = ALLOCATOR.allocator_api_glue();
+    let old = Layout::from_size_align(DEFAULT_CHUNK_SIZE * 4, 1).unwrap();
+    let ptr = glue.allocate(old).unwrap().cast::<u8>();
+    assert_eq!(ALLOCATOR.usage(), 4.0 / CHUNK_COUNT as f32);
+
+    // SAFETY: the allocation is live and `old.size()` byte long.
+    unsafe { ptr::write_bytes(ptr.as_ptr(), 0xa5, old.size()) };
+
+    let new = Layout::from_size_align(DEFAULT_CHUNK_SIZE, 1).unwrap();
+    // SAFETY: `ptr` is live, made for `old`, and `new` is smaller.
+    let shrunk = unsafe { glue.shrink(ptr, old, new) }.unwrap();
+    assert_eq!(
+        shrunk.cast::<u8>(),
+        ptr,
+        "the allocation still fits where it is and must not move"
+    );
+    assert_eq!(
+        ALLOCATOR.usage(),
+        1.0 / CHUNK_COUNT as f32,
+        "the three chunks behind the new size must be free again"
+    );
+
+    // SAFETY: the retained chunk is live and was written above.
+    let kept = unsafe {
+        slice::from_raw_parts(shrunk.cast::<u8>().as_ptr(), new.size())
+    };
+    assert!(kept.iter().all(|byte| *byte == 0xa5));
+
+    // Everything but the retained chunk has to be free and contiguous again,
+    // which only holds if the released chunks really went back.
+    let rest =
+        Layout::from_size_align(DEFAULT_CHUNK_SIZE * (CHUNK_COUNT - 1), 1)
+            .unwrap();
+    let refill = glue.allocate(rest).unwrap().cast::<u8>();
+    assert_eq!(ALLOCATOR.usage(), 1.0);
+    assert!(kept.iter().all(|byte| *byte == 0xa5));
+
+    // SAFETY: both are live allocations paired with their layouts.
+    unsafe {
+        glue.deallocate(ptr, new);
+        glue.deallocate(refill, rest);
+    }
+    assert_eq!(ALLOCATOR.usage(), 0.0);
+}

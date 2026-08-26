@@ -22,7 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 #![feature(allocator_api)]
-#![feature(slice_ptr_get)]
 
 use rand::RngExt;
 use simple_chunk_allocator::{DEFAULT_CHUNK_SIZE, GlobalChunkAllocator};
@@ -35,17 +34,14 @@ const BENCH_DURATION: f64 = 10.0;
 
 /// 160 MiB heap size.
 const HEAP_SIZE: usize = 0xa000000;
-/// Backing memory for heap management.
-static mut HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> =
-    PageAlignedBytes([0; HEAP_SIZE]);
+/// Both allocators get the same amount of usable heap, so that the numbers are
+/// comparable. The chunk allocator additionally needs room for its bitmap.
+const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
+const REGION_SIZE: usize = HEAP_SIZE + CHUNK_COUNT.div_ceil(8);
+static mut CHUNK_REGION: PageAlignedBytes<REGION_SIZE> =
+    PageAlignedBytes([0; REGION_SIZE]);
 static mut LINKED_LIST_HEAP_MEMORY: PageAlignedBytes<HEAP_SIZE> =
     PageAlignedBytes([0; HEAP_SIZE]);
-
-/// ChunkAllocator specific stuff.
-const CHUNK_COUNT: usize = HEAP_SIZE / DEFAULT_CHUNK_SIZE;
-const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-static mut HEAP_BITMAP_MEMORY: PageAlignedBytes<BITMAP_SIZE> =
-    PageAlignedBytes([0; BITMAP_SIZE]);
 
 struct GlobalAllocAdapter<A>(A);
 
@@ -75,17 +71,11 @@ unsafe impl<A: GlobalAlloc> Allocator for GlobalAllocAdapter<A> {
 /// performance, execute it with `RUSTFLAGS="-C target-cpu=native" cargo run
 /// --example bench --release`
 fn main() {
-    // SAFETY: these statics are exclusively owned by `chunk_allocator`.
+    // SAFETY: the static is exclusively owned by `chunk_allocator`.
     let chunk_allocator = unsafe {
-        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new_raw(
-            core::ptr::slice_from_raw_parts_mut(
-                core::ptr::addr_of_mut!(HEAP_MEMORY).cast(),
-                HEAP_SIZE,
-            ),
-            core::ptr::slice_from_raw_parts_mut(
-                core::ptr::addr_of_mut!(HEAP_BITMAP_MEMORY).cast(),
-                BITMAP_SIZE,
-            ),
+        GlobalChunkAllocator::<DEFAULT_CHUNK_SIZE>::new(
+            (&raw mut CHUNK_REGION).cast(),
+            REGION_SIZE,
         )
     };
 
@@ -160,7 +150,7 @@ fn benchmark_allocator(alloc: &mut dyn Allocator) -> BenchRunResults {
             .for_each(|(layout, allocation)| unsafe {
                 // println!("dealloc: layout={:?}", layout);
                 all_deallocations.push((layout, allocation));
-                alloc.deallocate(allocation.as_non_null_ptr(), layout);
+                alloc.deallocate(allocation.cast::<u8>(), layout);
             });
     }
 

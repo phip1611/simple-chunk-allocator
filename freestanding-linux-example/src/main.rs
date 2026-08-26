@@ -14,28 +14,17 @@ use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::Write;
 use core::panic::PanicInfo;
-use simple_chunk_allocator::{
-    heap, heap_bitmap, GlobalChunkAllocator, PageAligned,
-};
+use simple_chunk_allocator::GlobalChunkAllocator;
 
-static mut HEAP: PageAligned<[u8; 256]> = heap!(chunks = 16, chunksize = 16);
-static mut HEAP_BITMAP: PageAligned<[u8; 2]> = heap_bitmap!(chunks = 16);
+type Allocator = GlobalChunkAllocator<16>;
 
-// The backing memory must be CHUNK_SIZE-aligned; page alignment is preferable.
+const REGION_SIZE: usize = Allocator::required_region_size(16);
+static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
+
 #[global_allocator]
-// SAFETY: these statics are exclusively owned by `ALLOCATOR`.
-static ALLOCATOR: GlobalChunkAllocator<16> = unsafe {
-    GlobalChunkAllocator::<16>::new_raw(
-        core::ptr::slice_from_raw_parts_mut(
-            core::ptr::addr_of_mut!(HEAP).cast(),
-            256,
-        ),
-        core::ptr::slice_from_raw_parts_mut(
-            core::ptr::addr_of_mut!(HEAP_BITMAP).cast(),
-            2,
-        ),
-    )
-};
+// SAFETY: `ALLOCATOR` is the only user of `REGION` for the whole program.
+static ALLOCATOR: Allocator =
+    unsafe { Allocator::new((&raw mut REGION).cast(), REGION_SIZE) };
 
 /// Referenced as entry by linker argument. Entry into the code.
 #[no_mangle]

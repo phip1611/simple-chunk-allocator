@@ -5,6 +5,55 @@
 - All UB fixed.
 - Fixed some bugs
 - Improved documentation
+- **Breaking:** an invalid `CHUNK_SIZE` is a compile error instead of a
+  runtime one. `ChunkAllocatorError::BadChunkSize` is removed.
+- **Breaking:** one constructor remains. `ChunkAllocator::new` and
+  `GlobalChunkAllocator::new` are `const unsafe fn`; `new_const` and `new_raw`
+  are removed.
+- **Breaking:** the lifetime parameter of `ChunkAllocator` and
+  `GlobalChunkAllocator` is gone. The obligation it stood for is part of the
+  safety contract of `new`.
+- **Breaking:** the heap may have any length and any alignment. The allocator
+  derives the chunk count from the length and aligns the first chunk itself,
+  so the requirements on both are gone, and with them the
+  `ChunkAllocatorError` variants that reported them. The remaining failure is
+  `OutOfMemory`, now a struct with `Display` and `core::error::Error`.
+- **Breaking:** the allocator takes a single memory region and places its
+  bitmap at the end of it. The separate bitmap parameter is gone, and the
+  region may hold uninitialized content.
+- Added `required_region_size`, which reports the region size that holds a
+  given chunk count at any alignment.
+- **Breaking:** removed the `heap!` and `heap_bitmap!` macros, `PageAligned`,
+  and `DEFAULT_CHUNK_AMOUNT`. Use `required_region_size` to size a region, and
+  a `#[repr(align(...))]` wrapper if a specific alignment is wanted.
+- **Breaking:** `usage` returns a ratio between `0.0` and `1.0` instead of a
+  percentage rounded to two decimals. This drops the `libm` dependency.
+- `GlobalChunkAllocator` forwards `capacity` and `chunk_count`.
+- `AllocatorApiGlue::grow` reports an alignment it cannot serve as `AllocError`
+  instead of panicking.
+- `AllocatorApiGlue` implements `shrink`, so an allocation that shrinks within
+  the chunks it already owns keeps its place instead of being copied.
+- `GlobalChunkAllocator` also forwards `chunk_size` and `min_alignment`.
+- **Breaking:** the allocator takes a single memory region and places its
+  bitmap at the end of it. The separate bitmap parameter is gone, and the
+  region may hold uninitialized content.
+- Added `required_region_size`, which reports the region size that holds a
+  given chunk count at any alignment.
+- **Breaking:** removed the `heap!` and `heap_bitmap!` macros, `PageAligned`,
+  and `DEFAULT_CHUNK_AMOUNT`. Use `required_region_size` to size a region, and
+  a `#[repr(align(...))]` wrapper if a specific alignment is wanted.
+- **Breaking:** `usage` returns a ratio between `0.0` and `1.0` instead of a
+  percentage rounded to two decimals. This drops the `libm` dependency.
+- `GlobalChunkAllocator` forwards `capacity`, `chunk_count`, `chunk_size` and
+  `min_alignment`.
+- `AllocatorApiGlue::grow` reports an alignment it cannot serve as `AllocError`
+  instead of panicking.
+- `AllocatorApiGlue` implements `shrink`, so an allocation that shrinks within
+  the chunks it already owns keeps its place instead of being copied.
+- Deallocation points the next search at the freed region. The rule that was
+  there before could never fire, so a buffer that is allocated and freed in a
+  loop was searched for across the whole heap every time.
+- The crate no longer needs the `slice_ptr_get` feature, only `allocator_api`.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

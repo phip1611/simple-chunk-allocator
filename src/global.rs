@@ -25,44 +25,61 @@ SOFTWARE.
 
 use crate::{ChunkAllocator, DEFAULT_CHUNK_SIZE};
 use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
-use core::ptr::NonNull;
-
-/// Default heap size in chunks (1 MiB with [`DEFAULT_CHUNK_SIZE`]).
-pub const DEFAULT_CHUNK_AMOUNT: usize = 4096;
+use core::ptr::{self, NonNull};
+use log::error;
 
 /// Thread-safe [`ChunkAllocator`] wrapper for use as a global allocator.
 ///
 /// [`Self::allocator_api_glue`] exposes the nightly [`Allocator`] trait. See
 /// the crate-level documentation for a complete `#[global_allocator]` setup.
 #[derive(Debug)]
-pub struct GlobalChunkAllocator<
-    'a,
-    const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE,
->(spin::Mutex<ChunkAllocator<'a, CHUNK_SIZE>>);
+pub struct GlobalChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE>(
+    spin::Mutex<ChunkAllocator<CHUNK_SIZE>>,
+);
 
-impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
-    /// Creates a global allocator from backing storage in const contexts.
-    ///
-    /// Heap alignment is checked on the first allocation.
-    #[inline]
-    pub const fn new(heap: &'a mut [u8], bitmap: &'a mut [u8]) -> Self {
-        let inner_alloc = ChunkAllocator::<CHUNK_SIZE>::new_const(heap, bitmap);
-        let inner_alloc = spin::Mutex::new(inner_alloc);
-        Self(inner_alloc)
-    }
-
-    /// Creates a global allocator from raw backing-memory slices.
+impl<const CHUNK_SIZE: usize> GlobalChunkAllocator<CHUNK_SIZE> {
+    /// Creates a global allocator over a single caller-provided region.
     ///
     /// # Safety
-    /// `heap` and `bitmap` must meet [`ChunkAllocator::new_raw`] requirements
-    /// for the allocator lifetime.
+    /// `region` and `region_len` must meet [`ChunkAllocator::new`]
+    /// requirements for the allocator lifetime.
     #[inline]
-    pub const unsafe fn new_raw(heap: *mut [u8], bitmap: *mut [u8]) -> Self {
+    pub const unsafe fn new(region: *mut u8, region_len: usize) -> Self {
         // SAFETY: required validity and exclusivity are guaranteed by the
         // caller.
         let inner_alloc =
-            unsafe { ChunkAllocator::<CHUNK_SIZE>::new_raw(heap, bitmap) };
+            unsafe { ChunkAllocator::<CHUNK_SIZE>::new(region, region_len) };
         Self(spin::Mutex::new(inner_alloc))
+    }
+
+    /// Wrapper around [`ChunkAllocator::required_region_size`].
+    #[inline]
+    pub const fn required_region_size(chunk_count: usize) -> usize {
+        ChunkAllocator::<CHUNK_SIZE>::required_region_size(chunk_count)
+    }
+
+    /// Wrapper around [`ChunkAllocator::chunk_size`].
+    #[inline]
+    pub const fn chunk_size(&self) -> usize {
+        CHUNK_SIZE
+    }
+
+    /// Wrapper around [`ChunkAllocator::min_alignment`].
+    #[inline]
+    pub const fn min_alignment(&self) -> usize {
+        CHUNK_SIZE
+    }
+
+    /// Wrapper around [`ChunkAllocator::capacity`].
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.0.lock().capacity()
+    }
+
+    /// Wrapper around [`ChunkAllocator::chunk_count`].
+    #[inline]
+    pub fn chunk_count(&self) -> usize {
+        self.0.lock().chunk_count()
     }
 
     /// Wrapper around [`ChunkAllocator::usage`].
@@ -73,23 +90,23 @@ impl<'a, const CHUNK_SIZE: usize> GlobalChunkAllocator<'a, CHUNK_SIZE> {
 
     /// Returns an instance of [`AllocatorApiGlue`].
     #[inline]
-    pub const fn allocator_api_glue<'b>(
-        &'b self,
-    ) -> AllocatorApiGlue<'a, 'b, CHUNK_SIZE> {
+    pub const fn allocator_api_glue(&self) -> AllocatorApiGlue<'_, CHUNK_SIZE> {
         AllocatorApiGlue(self)
     }
 }
 
 // SAFETY: the mutex serializes access to the exclusively owned backing memory.
-unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc
-    for GlobalChunkAllocator<'a, CHUNK_SIZE>
+unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
+    for GlobalChunkAllocator<CHUNK_SIZE>
 {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.0
             .lock()
             .allocate(layout)
-            .map_or(core::ptr::null_mut(), |allocation| allocation.as_mut_ptr())
+            .map_or(ptr::null_mut(), |allocation| {
+                allocation.cast::<u8>().as_ptr()
+            })
     }
 
     #[inline]
@@ -111,8 +128,8 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc
             self.0
                 .lock()
                 .realloc(NonNull::new(ptr).unwrap(), layout, new_size)
-                .map_or(core::ptr::null_mut(), |allocation| {
-                    allocation.as_mut_ptr()
+                .map_or(ptr::null_mut(), |allocation| {
+                    allocation.cast::<u8>().as_ptr()
                 })
         }
     }
@@ -126,31 +143,16 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc
 /// # Example
 /// ```rust
 /// #![feature(allocator_api)]
-/// use simple_chunk_allocator::{
-///     GlobalChunkAllocator, PageAligned, heap, heap_bitmap,
-/// };
+/// use simple_chunk_allocator::GlobalChunkAllocator;
 ///
-/// const CHUNKS: usize = 16;
-/// const CHUNK_SIZE: usize = 256;
+/// type Allocator = GlobalChunkAllocator<256>;
 ///
-/// static mut HEAP: PageAligned<[u8; CHUNKS * CHUNK_SIZE]> =
-///     heap!(chunks = CHUNKS, chunksize = CHUNK_SIZE);
-/// static mut BITMAP: PageAligned<[u8; CHUNKS / 8]> =
-///     heap_bitmap!(chunks = CHUNKS);
+/// const REGION_SIZE: usize = Allocator::required_region_size(16);
+/// static mut REGION: [u8; REGION_SIZE] = [0; REGION_SIZE];
 ///
-/// // SAFETY: ALLOCATOR exclusively owns both statics for the whole program.
-/// static ALLOCATOR: GlobalChunkAllocator<CHUNK_SIZE> = unsafe {
-///     GlobalChunkAllocator::new_raw(
-///         core::ptr::slice_from_raw_parts_mut(
-///             core::ptr::addr_of_mut!(HEAP).cast(),
-///             CHUNKS * CHUNK_SIZE,
-///         ),
-///         core::ptr::slice_from_raw_parts_mut(
-///             core::ptr::addr_of_mut!(BITMAP).cast(),
-///             CHUNKS / 8,
-///         ),
-///     )
-/// };
+/// // SAFETY: `ALLOCATOR` is the only user of `REGION` for the whole program.
+/// static ALLOCATOR: Allocator =
+///     unsafe { Allocator::new((&raw mut REGION).cast(), REGION_SIZE) };
 ///
 /// // The vector allocates from ALLOCATOR; everything else keeps using the
 /// // registered global allocator.
@@ -162,19 +164,60 @@ unsafe impl<'a, const CHUNK_SIZE: usize> GlobalAlloc
 /// assert!(ALLOCATOR.usage() > 0.0);
 /// ```
 #[derive(Debug)]
-pub struct AllocatorApiGlue<'a, 'b, const CHUNK_SIZE: usize>(
-    &'a GlobalChunkAllocator<'b, CHUNK_SIZE>,
+pub struct AllocatorApiGlue<'a, const CHUNK_SIZE: usize>(
+    &'a GlobalChunkAllocator<CHUNK_SIZE>,
 );
 
+impl<const CHUNK_SIZE: usize> AllocatorApiGlue<'_, CHUNK_SIZE> {
+    /// Resizes an allocation, in place where the chunks it already owns are
+    /// enough.
+    ///
+    /// Shared by [`Allocator::grow`] and [`Allocator::shrink`], which differ
+    /// only in the direction the caller promises to resize in.
+    ///
+    /// # Safety
+    /// `ptr` must be a live allocation from this allocator, and `old_layout`
+    /// must be the layout it was made with.
+    #[inline]
+    unsafe fn resize(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // `ChunkAllocator::realloc` keeps the original alignment, so a
+        // stricter one cannot be served. Refuse it rather than panic: an
+        // allocator that unwinds is far harder to use than one that reports
+        // failure, and the trait allows reporting it.
+        if new_layout.align() > old_layout.align() {
+            error!(
+                "cannot resize from alignment {} to {}",
+                old_layout.align(),
+                new_layout.align()
+            );
+            return Err(AllocError);
+        }
+
+        let mut this = self.0.0.lock();
+        // SAFETY: the caller guarantees a live allocation and its layout.
+        unsafe { this.realloc(ptr, old_layout, new_layout.size()) }.map_err(
+            |error| {
+                error!("resize failed: {error:?}");
+                AllocError
+            },
+        )
+    }
+}
+
 // SAFETY: methods delegate to the mutex-protected `GlobalChunkAllocator`.
-unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator
-    for AllocatorApiGlue<'a, 'b, CHUNK_SIZE>
+unsafe impl<const CHUNK_SIZE: usize> Allocator
+    for AllocatorApiGlue<'_, CHUNK_SIZE>
 {
     #[inline]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut this = self.0.0.lock();
         ChunkAllocator::allocate(&mut *this, layout).map_err(|error| {
-            log::error!("ChunkAllocatorError: {:?}", error);
+            error!("allocation failed: {error:?}");
             AllocError
         })
     }
@@ -194,198 +237,23 @@ unsafe impl<'a, 'b, const CHUNK_SIZE: usize> Allocator
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        assert!(
-            old_layout.align() >= new_layout.align(),
-            "change of alignment currently not supported"
-        );
-        let mut this = self.0.0.lock();
         // SAFETY: `Allocator::grow` requires a valid allocation from `self`.
-        unsafe { this.realloc(ptr, old_layout, new_layout.size()) }.map_err(
-            |err| {
-                log::error!("realloc error: {err:?}");
-                AllocError
-            },
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::PageAligned;
-    use std::time::Instant;
-    use std::vec::Vec;
-
-    /// Uses [`GlobalChunkAllocator`] against the Rust Allocator API to test
-    /// the underlying [`ChunkAllocator`]. This is like an "integration" test
-    /// whereas the other tests in the other module are unit tests.
-    #[test]
-    fn test_allocator_with_allocator_api() {
-        const CHUNK_COUNT: usize = 8;
-        const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-        static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> =
-            PageAligned::new([0; HEAP_SIZE]);
-        static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> =
-            PageAligned::new([0; BITMAP_SIZE]);
-        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
-        static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new_raw(
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
-                    HEAP_SIZE,
-                ),
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
-                    BITMAP_SIZE,
-                ),
-            )
-        };
-
-        assert_eq!(0.0, ALLOCATOR.usage());
-        let vec1 = Vec::<u8, _>::with_capacity_in(
-            DEFAULT_CHUNK_SIZE * 2,
-            ALLOCATOR.allocator_api_glue(),
-        );
-        assert_eq!(25.0, ALLOCATOR.usage());
-        let vec2 = Vec::<u8, _>::with_capacity_in(
-            DEFAULT_CHUNK_SIZE * 6,
-            ALLOCATOR.allocator_api_glue(),
-        );
-        assert_eq!(100.0, ALLOCATOR.usage());
-
-        // I can't test it like this :( Because of the design of the types of
-        // the Rust standard library, they fail if an allocation can't
-        // be satisfied. However, they do not throw a normal kind
-        // of panic but trigger the "rust alloc error" hook, which terminates
-        // the program in a different manner.
-        //let alloc_res = std::panic::catch_unwind(|| {
-        //    let _vec = Vec::<u8, _>::with_capacity_in(1,
-        // ALLOCATOR.allocator_api_glue());
-        //});
-        //assert!(panic_oom.is_err(), "allocator is out of memory");
-
-        drop(vec1);
-        assert_eq!(75.0, ALLOCATOR.usage());
-        let vec3 = Vec::<u8, _>::with_capacity_in(
-            DEFAULT_CHUNK_SIZE,
-            ALLOCATOR.allocator_api_glue(),
-        );
-        assert_eq!(87.5, ALLOCATOR.usage());
-
-        drop(vec2);
-        drop(vec3);
-        assert_eq!(0.0, ALLOCATOR.usage());
+        unsafe { self.resize(ptr, old_layout, new_layout) }
     }
 
-    #[test]
-    fn test_global_alloc_returns_null_on_out_of_memory() {
-        const CHUNK_COUNT: usize = 8;
-        const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-        static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> =
-            PageAligned::new([0; HEAP_SIZE]);
-        static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> =
-            PageAligned::new([0; BITMAP_SIZE]);
-        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
-        static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new_raw(
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
-                    HEAP_SIZE,
-                ),
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
-                    BITMAP_SIZE,
-                ),
-            )
-        };
-        let layout = Layout::from_size_align(HEAP_SIZE, 1).unwrap();
-
-        // SAFETY: `layout` is valid and the returned pointer is deallocated
-        // below.
-        let ptr = unsafe { GlobalAlloc::alloc(&ALLOCATOR, layout) };
-        assert!(!ptr.is_null());
-        // SAFETY: this valid request cannot fit while `ptr` is live.
-        assert!(unsafe { GlobalAlloc::alloc(&ALLOCATOR, layout) }.is_null());
-        // SAFETY: `ptr` is the live allocation returned for `layout`.
-        unsafe { GlobalAlloc::dealloc(&ALLOCATOR, ptr, layout) };
-    }
-
-    /// Uses [`GlobalChunkAllocator`] against the Rust Allocator API to test
-    /// if the realloc optimization works and is used.
-    #[test]
-    #[ignore = "performance benchmark"]
-    fn test_allocator_fast_realloc_works() {
-        const CHUNK_COUNT: usize = 32;
-        const HEAP_SIZE: usize = DEFAULT_CHUNK_SIZE * CHUNK_COUNT;
-        const BITMAP_SIZE: usize = CHUNK_COUNT / 8;
-        static mut HEAP_MEM: PageAligned<[u8; HEAP_SIZE]> =
-            PageAligned::new([0; HEAP_SIZE]);
-        static mut BITMAP_MEM: PageAligned<[u8; BITMAP_SIZE]> =
-            PageAligned::new([0; BITMAP_SIZE]);
-        // SAFETY: these statics are exclusively owned by `ALLOCATOR`.
-        static ALLOCATOR: GlobalChunkAllocator = unsafe {
-            GlobalChunkAllocator::new_raw(
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(HEAP_MEM).cast(),
-                    HEAP_SIZE,
-                ),
-                core::ptr::slice_from_raw_parts_mut(
-                    core::ptr::addr_of_mut!(BITMAP_MEM).cast(),
-                    BITMAP_SIZE,
-                ),
-            )
-        };
-
-        // I run the allocation N times to measure the duration of it. This way
-        // I can figure out if the shortcut was taken or not.
-        const RUNS: usize = 10000;
-
-        // TEST WITH FAST REALLOC
-        let begin = Instant::now();
-        for _ in 0..RUNS {
-            let mut vec = Vec::<u8, _>::new_in(ALLOCATOR.allocator_api_glue());
-            for i in 0..DEFAULT_CHUNK_SIZE {
-                vec.resize(i, 42);
-            }
-            let _ = vec;
-        }
-        let avg_duration_with_fast_realloc =
-            (Instant::now() - begin).as_secs_f64() / RUNS as f64;
-
-        // TEST WITHOUT FAST REALLOC
-        let begin = Instant::now();
-        for _ in 0..RUNS {
-            let mut vec = Vec::<u8, _>::new_in(ALLOCATOR.allocator_api_glue());
-            // realloc optimization can not be used; always requires one more
-            // chunk
-            #[allow(clippy::identity_op)]
-            vec.resize(DEFAULT_CHUNK_SIZE * 1 + 1, 42);
-            vec.resize(DEFAULT_CHUNK_SIZE * 2 + 1, 42);
-            vec.resize(DEFAULT_CHUNK_SIZE * 3 + 1, 42);
-            vec.resize(DEFAULT_CHUNK_SIZE * 4 + 1, 42);
-            vec.resize(DEFAULT_CHUNK_SIZE * 5 + 1, 42);
-            vec.resize(DEFAULT_CHUNK_SIZE * 6 + 1, 42);
-            vec.resize(DEFAULT_CHUNK_SIZE * 7 + 1, 42);
-
-            let _ = vec;
-        }
-        let avg_duration_without_fast_realloc =
-            (Instant::now() - begin).as_secs_f64() / RUNS as f64;
-
-        // almost always 3.6 or so but I use 2.6 so that test is not flaky
-        // TODO the whole test is weird and probably not completely useful
-        const FASTER_FACTOR_THRESHOLD: f64 = 2.0;
-        let faster_factor =
-            avg_duration_without_fast_realloc / avg_duration_with_fast_realloc;
-        dbg!(
-            avg_duration_without_fast_realloc / avg_duration_with_fast_realloc
-        );
-        dbg!(
-            avg_duration_with_fast_realloc,
-            avg_duration_without_fast_realloc
-        );
-        assert!(faster_factor >= FASTER_FACTOR_THRESHOLD);
+    /// Overrides the default, which always allocates, copies and frees.
+    ///
+    /// An allocation that shrinks within the chunks it already owns keeps
+    /// them, so the copy is avoidable; only the chunks behind the new size are
+    /// released. Rounding up to whole chunks makes that the common case.
+    #[inline]
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // SAFETY: `Allocator::shrink` requires a valid allocation from `self`.
+        unsafe { self.resize(ptr, old_layout, new_layout) }
     }
 }

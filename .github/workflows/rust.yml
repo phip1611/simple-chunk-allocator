@@ -22,6 +22,11 @@ jobs:
             # The `unstable` feature needs a nightly toolchain.
             features: "--all-features"
     runs-on: ${{ matrix.runs-on }}
+    env:
+      # rust-toolchain.toml pins nightly for local development and outranks
+      # the `rustup default` the toolchain action sets. This variable
+      # outranks the file, so the job really runs its matrix toolchain.
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v7
       - name: Setup Rust toolchain
@@ -55,6 +60,9 @@ jobs:
           - rust: nightly
             # The `unstable` feature needs a nightly toolchain.
             features: "--all-features"
+    env:
+      # See the build job: outranks the nightly pin in rust-toolchain.toml.
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v7
       - name: Setup Rust toolchain
@@ -72,6 +80,9 @@ jobs:
     strategy:
       matrix:
         rust: [ nightly ]
+    env:
+      # See the build job: outranks the nightly pin in rust-toolchain.toml.
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v7
       - name: Setup Rust toolchain

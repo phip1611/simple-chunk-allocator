@@ -44,8 +44,6 @@ jobs:
         name: Test with Miri
         run: cargo miri test --all-features
       - if: matrix.rust == 'nightly'
-        run: cargo run --release --example bench --features unstable
-      - if: matrix.rust == 'nightly'
         run: cargo run --example minimal --features unstable
 
   build_nostd:

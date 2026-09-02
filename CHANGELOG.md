@@ -58,6 +58,8 @@
   there before could never fire, so a buffer that is allocated and freed in a
   loop was searched for across the whole heap every time.
 - The crate no longer needs the `slice_ptr_get` feature, only `allocator_api`.
+- Removed the wall-clock `bench` example together with the `x86`, `rand`, and
+  `linked_list_allocator` dev-dependencies.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

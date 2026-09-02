@@ -23,16 +23,17 @@ SOFTWARE.
 */
 //! # Simple Chunk Allocator
 //!
-//! A nightly-only `no_std` allocator that manages fixed-size chunks in
-//! caller-provided memory.
+//! A `no_std` allocator that manages fixed-size chunks in caller-provided
+//! memory.
 //!
 //! [`ChunkAllocator`] takes a single contiguous region and splits it into
 //! chunks plus the bitmap that tracks them. [`GlobalChunkAllocator`] wraps it
 //! behind a lock for `#[global_allocator]` use. The region needs no particular
 //! alignment and no initialization; see [`ChunkAllocator::new`].
 //!
-//! The crate requires nightly for `allocator_api`. See the README for sizing
-//! guidance.
+//! The crate builds on stable Rust (MSRV 1.85). The opt-in `unstable` cargo
+//! feature adds integration with the nightly `allocator_api` and requires a
+//! nightly toolchain. See the README for sizing guidance.
 //!
 //! ## Highlights
 //!
@@ -52,7 +53,6 @@ SOFTWARE.
 //! count into the region size that is guaranteed to hold it.
 //!
 //! ```rust
-//! #![feature(allocator_api)]
 //! use simple_chunk_allocator::GlobalChunkAllocator;
 //!
 //! /// Named once, so that the chunk size is stated once.
@@ -75,8 +75,8 @@ SOFTWARE.
 //! }
 //! ```
 //!
-//! [`AllocatorApiGlue`] serves the same allocator to individual collections
-//! when it is not registered globally.
+//! With the `unstable` crate feature, `AllocatorApiGlue` serves the same
+//! allocator to individual collections when it is not registered globally.
 //!
 //! ## Implementation
 //!
@@ -128,7 +128,8 @@ SOFTWARE.
 )]
 #![deny(missing_debug_implementations)]
 #![deny(rustdoc::all)]
-#![feature(allocator_api)]
+#![cfg_attr(feature = "unstable", feature(allocator_api))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod allocator;
 mod global;

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Breaking:** the crate now builds on stable Rust; the MSRV is 1.85. The
+  `allocator_api` integration (`AllocatorApiGlue`,
+  `GlobalChunkAllocator::allocator_api_glue`) moved behind the new opt-in
+  `unstable` cargo feature, which still requires a nightly toolchain.
 - All UB fixed.
 - Fixed some bugs
 - Improved documentation

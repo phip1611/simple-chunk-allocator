@@ -14,12 +14,15 @@ jobs:
         # TODO once the x86 dependency for the benchmark is gone, we can add
         # macos-latest.
         runs-on: [ ubuntu-latest, windows-latest ]
-        # TODO also test MSRV and stable once the crate builds there
-        rust: [ nightly ]
+        # 1.85.0 is the MSRV; keep in sync with rust-version in Cargo.toml.
+        rust: [ 1.85.0, stable, nightly ]
         include:
           - components: ""
+          - features: ""
           - rust: nightly
             components: miri
+            # The `unstable` feature needs a nightly toolchain.
+            features: "--all-features"
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v7
@@ -29,24 +32,31 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: ${{ matrix.components }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --all-targets
-      - run: cargo test --all-targets
+      - run: cargo build --all-targets ${{ matrix.features }}
+      - run: cargo test --all-targets ${{ matrix.features }}
       # `--all-targets` covers the examples but skips the doctests, which are
       # where the documented usage patterns are checked.
-      - run: cargo test --doc
+      - run: cargo test --doc ${{ matrix.features }}
       - if: matrix.rust == 'nightly'
         name: Test with Miri
-        run: cargo miri test
-      - run: cargo run --release --example bench
-      - run: cargo run --example minimal
+        run: cargo miri test --all-features
+      - if: matrix.rust == 'nightly'
+        run: cargo run --release --example bench --features unstable
+      - if: matrix.rust == 'nightly'
+        run: cargo run --example minimal --features unstable
 
   build_nostd:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # TODO also test MSRV and stable once the crate builds there
-        rust: [ nightly ]
+        # 1.85.0 is the MSRV; keep in sync with rust-version in Cargo.toml.
+        rust: [ 1.85.0, stable, nightly ]
+        include:
+          - features: ""
+          - rust: nightly
+            # The `unstable` feature needs a nightly toolchain.
+            features: "--all-features"
     steps:
       - uses: actions/checkout@v7
       - name: Setup Rust toolchain
@@ -56,9 +66,10 @@ jobs:
           targets: thumbv7em-none-eabihf
       - uses: Swatinem/rust-cache@v2
       - name: Build no_std target
-        run: cargo build --target thumbv7em-none-eabihf
+        run: cargo build --target thumbv7em-none-eabihf ${{ matrix.features }}
 
   style_checks:
+    # Needs nightly toolchain because of some nightly features of rustfmt.
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -73,7 +84,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Rustfmt
         run: cargo fmt -- --check
-      - name: Clippy
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets
+      - name: Clippy (all features)
         run: cargo clippy --all-targets --all-features
-      - name: Rustdoc
+      - name: Rustdoc (default features)
         run: cargo doc --no-deps --document-private-items
+      - name: Rustdoc (all features)
+        run: cargo doc --no-deps --document-private-items --all-features

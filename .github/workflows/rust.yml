@@ -11,9 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # TODO once the x86 dependency for the benchmark is gone, we can add
-        # macos-latest.
-        runs-on: [ ubuntu-latest, windows-latest ]
+        runs-on: [ ubuntu-latest, windows-latest, macos-latest ]
         # 1.85.0 is the MSRV; keep in sync with rust-version in Cargo.toml.
         rust: [ 1.85.0, stable, nightly ]
         include:

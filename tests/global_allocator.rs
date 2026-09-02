@@ -99,13 +99,14 @@ fn interleaved_allocations_stay_independent() {
     }
 
     // Dropping every second entry leaves holes for the next round to reuse.
-    map.retain(|key, _| key.is_multiple_of(2));
-    for key in (0..count).filter(|key| !key.is_multiple_of(2)) {
+    // `is_multiple_of` would need Rust 1.87, but the MSRV is 1.85.
+    map.retain(|key, _| key % 2 == 0);
+    for key in (0..count).filter(|key| key % 2 != 0) {
         map.insert(key, format!("again-{key}"));
     }
 
     for key in 0..count {
-        let expected = if key.is_multiple_of(2) {
+        let expected = if key % 2 == 0 {
             format!("value-{key}")
         } else {
             format!("again-{key}")

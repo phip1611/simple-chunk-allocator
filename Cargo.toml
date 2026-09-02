@@ -1,12 +1,12 @@
 [package]
 name = "simple-chunk-allocator"
 description = """
-A nightly-only `no_std` allocator that manages fixed-size chunks in a single caller-provided memory region.
+A `no_std` allocator that manages fixed-size chunks in a single caller-provided memory region, with
+optional support for the unstable `allocator_api`.
 """
 version = "0.1.6"
 edition = "2024"
-# nightly 1.87
-# rust-version = "1.87.0"
+rust-version = "1.85"
 authors = [
     "Philipp Schuster <phip1611@gmail.com>"
 ]
@@ -30,12 +30,39 @@ exclude = [
 codegen-units = 1
 lto = true
 
+[features]
+# Integration with the unstable `allocator_api` (`AllocatorApiGlue`).
+# Requires a nightly toolchain.
+unstable = []
+
 [dependencies]
 log = "0.4"
 spin = "0.12.2"
 
 [dev-dependencies]
-rand = "0.10"
-x86 = "0.52"
-# for benchmarking
-linked_list_allocator = { version = "0.10", features = ["use_spin"] }
+criterion = { version = "0.7", features = ["html_reports"] }
+linked_list_allocator = { version = "0.10", default-features = false }
+talc = "5.1"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
+
+# These targets use the nightly-only allocator_api; cargo skips them unless
+# the `unstable` feature is enabled.
+[[example]]
+name = "minimal"
+required-features = ["unstable"]
+
+[[test]]
+name = "allocator_api"
+required-features = ["unstable"]
+
+# Criterion provides `main`, so the default libtest harness must stay out of
+# the way.
+[[bench]]
+name = "bench"
+harness = false

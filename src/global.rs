@@ -24,14 +24,18 @@ SOFTWARE.
 //! Module for [`GlobalChunkAllocator`].
 
 use crate::{ChunkAllocator, DEFAULT_CHUNK_SIZE};
-use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+#[cfg(feature = "unstable")]
+use core::alloc::{AllocError, Allocator};
+use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, NonNull};
+#[cfg(feature = "unstable")]
 use log::error;
 
 /// Thread-safe [`ChunkAllocator`] wrapper for use as a global allocator.
 ///
-/// [`Self::allocator_api_glue`] exposes the nightly [`Allocator`] trait. See
-/// the crate-level documentation for a complete `#[global_allocator]` setup.
+/// With the `unstable` crate feature, `Self::allocator_api_glue` exposes the
+/// nightly `Allocator` trait. See the crate-level documentation for a complete
+/// `#[global_allocator]` setup.
 #[derive(Debug)]
 pub struct GlobalChunkAllocator<const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE>(
     spin::Mutex<ChunkAllocator<CHUNK_SIZE>>,
@@ -89,6 +93,7 @@ impl<const CHUNK_SIZE: usize> GlobalChunkAllocator<CHUNK_SIZE> {
     }
 
     /// Returns an instance of [`AllocatorApiGlue`].
+    #[cfg(feature = "unstable")]
     #[inline]
     pub const fn allocator_api_glue(&self) -> AllocatorApiGlue<'_, CHUNK_SIZE> {
         AllocatorApiGlue(self)
@@ -163,11 +168,13 @@ unsafe impl<const CHUNK_SIZE: usize> GlobalAlloc
 /// vec.push(42);
 /// assert!(ALLOCATOR.usage() > 0.0);
 /// ```
+#[cfg(feature = "unstable")]
 #[derive(Debug)]
 pub struct AllocatorApiGlue<'a, const CHUNK_SIZE: usize>(
     &'a GlobalChunkAllocator<CHUNK_SIZE>,
 );
 
+#[cfg(feature = "unstable")]
 impl<const CHUNK_SIZE: usize> AllocatorApiGlue<'_, CHUNK_SIZE> {
     /// Resizes an allocation, in place where the chunks it already owns are
     /// enough.
@@ -210,6 +217,7 @@ impl<const CHUNK_SIZE: usize> AllocatorApiGlue<'_, CHUNK_SIZE> {
 }
 
 // SAFETY: methods delegate to the mutex-protected `GlobalChunkAllocator`.
+#[cfg(feature = "unstable")]
 unsafe impl<const CHUNK_SIZE: usize> Allocator
     for AllocatorApiGlue<'_, CHUNK_SIZE>
 {

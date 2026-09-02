@@ -28,6 +28,7 @@ SOFTWARE.
 //! Unlike `tests/global_allocator.rs`, nothing else allocates here, so these
 //! tests can assert on exact usage numbers.
 
+// This target only builds with `--features unstable` on a nightly toolchain.
 #![feature(allocator_api)]
 
 use core::alloc::{Allocator, GlobalAlloc, Layout};

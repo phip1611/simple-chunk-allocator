@@ -39,6 +39,11 @@ unstable = []
 log = "0.4"
 spin = "0.12.2"
 
+[dev-dependencies]
+criterion = { version = "0.7", features = ["html_reports"] }
+linked_list_allocator = { version = "0.10", default-features = false }
+talc = "5.1"
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
@@ -55,3 +60,9 @@ required-features = ["unstable"]
 [[test]]
 name = "allocator_api"
 required-features = ["unstable"]
+
+# Criterion provides `main`, so the default libtest harness must stay out of
+# the way.
+[[bench]]
+name = "bench"
+harness = false

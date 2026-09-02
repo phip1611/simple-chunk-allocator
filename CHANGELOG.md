@@ -60,6 +60,9 @@
 - The crate no longer needs the `slice_ptr_get` feature, only `allocator_api`.
 - Removed the wall-clock `bench` example together with the `x86`, `rand`, and
   `linked_list_allocator` dev-dependencies.
+- Added criterion benchmarks (`cargo bench`) covering the allocation fast
+  path and deterministic workload replays against `linked_list_allocator`
+  and `talc`. CI builds the benchmarks but does not run measurements.
 
 ## v0.1.6 (2024-09-29)
 I discourage the use of this library, please look for an alternative. Use it

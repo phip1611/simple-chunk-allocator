@@ -40,6 +40,10 @@ jobs:
       # `--all-targets` covers the examples but skips the doctests, which are
       # where the documented usage patterns are checked.
       - run: cargo test --doc ${{ matrix.features }}
+      # Builds the LTO bench profile once; the dev-profile steps above
+      # already build and smoke-run the benches on every cell.
+      - if: matrix.rust == 'stable' && matrix.runs-on == 'ubuntu-latest'
+        run: cargo bench --no-run
       - if: matrix.rust == 'nightly'
         name: Test with Miri
         run: cargo miri test --all-features

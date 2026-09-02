@@ -136,9 +136,40 @@ checks are not redundant with Miri, they are the only check for that property.
 
 ## Performance
 
-TODO: The previous benchmark numbers were measured against an older version of
-`examples/bench.rs` and are therefore removed. New numbers follow once the
-benchmark has been reworked.
+Criterion benchmarks live in `benches/bench.rs`: fast-path round trips of
+this allocator, plus deterministic mixed and fragmentation-heavy workloads
+replayed against `linked_list_allocator` and `talc`.
+
+```
+cargo bench                        # everything
+cargo bench -- compare_            # comparison scenarios only
+cargo bench -- --test              # one iteration each, no measurement
+```
+
+Every workload comes from a fixed seed, so runs are reproducible and
+comparable across commits. HTML reports land in
+`target/criterion/report/index.html`. 
+
+### Comparison with other allocators
+
+The comparison drives every allocator through its raw, unsynchronized `&mut`
+API over an identically sized region; each pays its own metadata out of that
+region and replays the identical operation sequence. Keep in mind that the
+allocators pursue different goals - whole-chunk rounding and predictability
+here, a first-fit free list and size-binned free lists there - so results are
+workload-dependent and a starting point, not a verdict.
+
+Medians on an AMD Ryzen 7 7840U (Linux, rustc 1.98.0, 2026-09):
+
+| Scenario                       | this crate | `linked_list_allocator` | `talc` |
+|--------------------------------|-----------:|------------------------:|-------:|
+| round trip (64 B alloc + free) |     8.6 ns |                  5.9 ns | 12.5 ns |
+| mixed churn (ops/s)            |      2.0 M |                  19.3 M |  116 M |
+| fragmentation churn (ops/s)    |     0.86 M |                   6.8 M |  103 M |
+
+The happy path is competitive; under sustained churn the linear bitmap search
+dominates and the general-purpose designs pull far ahead. That is the price
+of the single-bit-per-chunk bookkeeping this crate trades for.
 
 ## Cargo features
 
